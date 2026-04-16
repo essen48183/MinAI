@@ -2,7 +2,7 @@
 
 *A companion textbook for `minai.cpp`.*
 
-*Written for my son, while he was at the age where calculus and linear algebra are becoming real but it isn't yet obvious what they are ultimately for. Shared in case anyone else is in the same spot.*
+*Written for my children, while at the age where calculus and linear algebra are real but it isn't yet obvious what they are ultimately for. Shared in case anyone else is in the same spot.*
 
 ---
 

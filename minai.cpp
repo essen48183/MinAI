@@ -1,8 +1,9 @@
 // ============================================================================
 //  MinAI — a minimalist transformer that learns little sequence puzzles
 //  ----------------------------------------------------------------------------
-//  Apple-Silicon C++ port of Damien Boureille's ATTN-11 (PDP-11 MACRO-11)
-//  via Dave Plummer's 2.11BSD port (github.com/davepl/pdpsrc/tree/main/bsd/attn).
+//  Portable C++17 port (developed on Apple Silicon, builds on macOS, Linux,
+//  and Windows) of Damien Boureille's ATTN-11 (PDP-11 MACRO-11) via Dave
+//  Plummer's 2.11BSD port (github.com/davepl/pdpsrc/tree/main/bsd/attn).
 //
 //  THE TASK (default)
 //    Input:  [0, 1, 2, 3, 4, 5, 6, 7]
@@ -38,13 +39,15 @@
 //    The PDP-11 has NO floating-point unit by default. Boureille used Q8.8
 //    fixed-point for the forward pass (int16 where the low 8 bits are
 //    fractional; "1.5" = 0x0180 = 384) and Q15 for gradients. We use plain
-//    `float` here because Apple Silicon has a vector FPU and because backprop
-//    is hard enough to see without integer bookkeeping over it. At the bottom
-//    of the file is a working Q8 softmax-by-lookup-table demo so you can watch
-//    the real PDP-11 trick execute.
+//    `float` here because every modern CPU has a vector FPU and because
+//    backprop is hard enough to see without integer bookkeeping over it. At
+//    the bottom of the file is a working Q8 softmax-by-lookup-table demo so
+//    you can watch the real PDP-11 trick execute.
 //
-//  Compile: clang++ -std=c++17 -O2 -o minai minai.cpp
-//  Run    : ./minai --help
+//  Compile (Mac/Linux):   make
+//          (any platform): cmake -B build && cmake --build build
+//          (direct):      clang++ -std=c++17 -O2 -o minai minai.cpp
+//  Run     : ./minai --help
 // ============================================================================
 
 #include <cstdio>

@@ -8,12 +8,25 @@ A single-file C++ transformer that learns to reverse `[0..7] → [7..0]`. 1,216 
 
 ## Quick start
 
+macOS and Linux:
+
 ```bash
-make              # builds ./minai with clang++ -O2
+make              # uses your default C++ compiler (clang++ on Mac, g++ on Linux)
 ./minai           # run with defaults
 ./minai --help    # flag reference
 make clean        # remove the binary
 ```
+
+Windows (and also works on Mac/Linux):
+
+```bash
+cmake -B build
+cmake --build build --config Release
+build\Release\minai.exe --help     # Windows
+./build/minai --help               # Mac/Linux
+```
+
+No external libraries, no dependencies — everything comes from the C++17 standard library.
 
 The run prints training progress every 50 steps, then a demo showing the trained model reversing `0..7`, then the last block's attention matrix, then a bonus Q8 fixed-point softmax demo (the actual PDP-11 trick, no `std::exp`).
 

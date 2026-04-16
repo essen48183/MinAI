@@ -1,5 +1,14 @@
-# Compiled binary
+# Compiled binaries
 minai
+minai.exe
+
+# CMake build output
+build/
+build_test/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
 
 # md2pdf temp file
 .md2pdf_tmp.html
@@ -9,3 +18,13 @@ minai
 
 # Object files
 *.o
+*.obj
+
+# Visual Studio / MSVC
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.dll
+x64/
+.vs/

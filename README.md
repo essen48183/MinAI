@@ -2,7 +2,7 @@
 
 **A single-file C++ transformer, built to be read.** Every mechanism of a modern LLM — attention, softmax, backprop, residual connections, causal masking — in ~780 lines of heavily commented code. Learns to reverse a list of 8 digits (and sort, shift, or mod-sum), demonstrating in miniature every idea that powers GPT-4.
 
-Descends from Damien Boureille's [ATTN-11](https://github.com/dbrll/ATTN-11) (PDP-11 MACRO-11 assembly) via Dave Plummer's [2.11BSD port](https://github.com/davepl/pdpsrc/tree/main/bsd/attn), rewritten for Apple Silicon in C++ (works on any Unix with `clang++`).
+Descends from Damien Boureille's [ATTN-11](https://github.com/dbrll/ATTN-11) (PDP-11 MACRO-11 assembly) via Dave Plummer's [2.11BSD port](https://github.com/davepl/pdpsrc/tree/main/bsd/attn). Portable C++17 — builds on macOS, Linux, and Windows.
 
 ## Why this exists
 
@@ -10,11 +10,24 @@ It's easy to lose the plot on what a large language model does when every explan
 
 ## Quick start
 
+**macOS / Linux** (any C++17 compiler — clang++ or g++):
+
 ```bash
-make              # compiles with clang++ -O2
+make              # builds ./minai with your default C++ compiler
 ./minai           # trains the default config and runs a demo
 ./minai --help    # see all flags
 ```
+
+**Windows** (and an all-platforms fallback) via CMake:
+
+```bash
+cmake -B build
+cmake --build build --config Release
+./build/minai --help          # macOS/Linux
+./build/Release/minai.exe     # Windows MSVC
+```
+
+No external dependencies — everything needed is in the standard library. Colored sparkline output uses Unicode block characters; works in macOS Terminal, Linux terminals, and Windows Terminal (the default on Windows 11).
 
 Abridged output:
 
