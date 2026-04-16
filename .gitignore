@@ -20,8 +20,10 @@ Makefile.cmake
 *.o
 *.obj
 
-# Visual Studio / MSVC
-*.exe
+# Visual Studio / MSVC local build leftovers.
+# (Scoped so the prebuilt bin/windows-x86_64/minai.exe is preserved.)
+/*.exe
+build/*.exe
 *.pdb
 *.ilk
 *.lib
