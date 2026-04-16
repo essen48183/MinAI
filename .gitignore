@@ -1,6 +1,6 @@
-# Compiled binaries
-minai
-minai.exe
+# Compiled binaries at the repo root only — prebuilt releases in bin/ are kept.
+/minai
+/minai.exe
 
 # CMake build output
 build/

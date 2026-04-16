@@ -1,0 +1,48 @@
+# Build MinAI on Linux and Windows (macOS is committed directly to bin/macos-universal/
+# because it can be built as a universal binary locally). Uploaded as Actions
+# artifacts that can be downloaded and committed to bin/ when a release is cut.
+
+name: Build binaries
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'minai.cpp'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: linux-x86_64
+            binary_path: build/minai
+          - os: windows-latest
+            artifact_name: windows-x86_64
+            binary_path: build/Release/minai.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Smoke test (--help should exit 0)
+        shell: bash
+        run: |
+          "${{ matrix.binary_path }}" --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: minai-${{ matrix.artifact_name }}
+          path: ${{ matrix.binary_path }}
+          if-no-files-found: error

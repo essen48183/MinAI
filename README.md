@@ -8,7 +8,21 @@ Descends from Damien Boureille's [ATTN-11](https://github.com/dbrll/ATTN-11) (PD
 
 It's easy to lose the plot on what a large language model does when every explanation starts at "96 transformer blocks". This program is the plot — the irreducible version that still contains every mechanism. If you can read ~780 lines of commented C++, you understand the skeleton of every frontier model. The only difference between this and GPT-4 is quantity: more layers, more heads, more width, more data. Not one new idea.
 
-## Quick start
+## Quick start — two paths
+
+### If you just want to run it (no compiler, no programming required)
+
+Prebuilt binaries for common platforms live in [`bin/`](bin/). Grab the one for your platform and run it from a terminal:
+
+| Platform | File | How to run |
+|---|---|---|
+| **macOS** (Apple Silicon or Intel) | [`bin/macos-universal/minai`](bin/macos-universal/minai) | `./minai` from a terminal |
+| **Linux** (x86_64) | [`bin/linux-x86_64/minai`](bin/linux-x86_64/minai) | `./minai` from a terminal |
+| **Windows** (x86_64) | [`bin/windows-x86_64/minai.exe`](bin/windows-x86_64/minai.exe) | double-click or run from `cmd`/PowerShell |
+
+See [`bin/README.md`](bin/README.md) for details (including the macOS Gatekeeper first-run workaround). After it runs, `./minai --help` shows every flag.
+
+### If you want to read and modify the source
 
 **macOS / Linux** (any C++17 compiler — clang++ or g++):
 
