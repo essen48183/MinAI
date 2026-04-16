@@ -39,7 +39,7 @@ These run after training is done and give you a small-scale taste of three techn
 
 - **Hierarchical weight quantization** — takes the trained `Wout` matrix and stores it three ways: Q8 flat, Q4 flat, and Q4 with a per-column "feet + left hand + right hand" scale hierarchy. Prints max / RMS reconstruction error and whether the model still works with the quantized weights. The hierarchical Q4 at ~5 bits/weight ends up between Q8 and flat Q4 in precision — which is the trick behind llama.cpp's Q4_K_M format that lets a 70B model run on a MacBook.
 
-- **Speculative decoding** — trains a second smaller "draft" model (half the block count of the big one, with everything else on) and measures how often it agrees with the big model on the held-out set. The agreement rate is the expected acceptance rate in real speculative decoding, and translates directly to a throughput speedup (the big model verifies K draft tokens in one forward pass — most of its time is spent loading its own weights, so amortizing that over multiple accepted tokens is ~pure win).
+- **Speculative decoding** — trains a tiny 1-block, no-FFN, no-LayerNorm "draft" model (the classic 1,216-param MinAI shape), then prints a side-by-side rollout on one held-out example, an accepted-tokens histogram across all held-out windows, and an honest speedup formula that accounts for the draft's own compute cost. A reference table shows what the speedup would be at different agreement rates and draft/big cost ratios — making it clear that the speedup can be *negative* (spec decoding slows you down) if the draft is only modestly cheaper than big. Needs `--seq_len=32` for enough per-example windows to make the histogram informative.
 
 - **KV cache tiering** — sweeps a "hot working memory" size W from 0 to `seq_len` and re-runs the forward pass with K/V at every position older than W quantized to Q8. Reports the accuracy at each W, with Miller's 7 (the classic human working-memory capacity) called out. On MinAI specifically the effect is subtle because Q8 is so fine-grained; the note in the output explains what real LLMs do differently.
 
@@ -81,7 +81,7 @@ Each command below is tuned to have enough `--steps` for the reader to see the t
 ./minai --blocks=96 --layernorm=1 --random=1 --batch=16 --steps=5000 # GPT-3 depth; slow but trains
 
 # ---- BONUS DEMOS (hierarchical quant, speculative decoding, KV tiering) --------
-./minai --random=1 --batch=16 --blocks=4 --layernorm=1 --steps=3000 --extra_demos=1
+./minai --random=1 --seq_len=32 --batch=16 --blocks=4 --layernorm=1 --steps=10000 --extra_demos=1
 ```
 
 ### The loss curve plot

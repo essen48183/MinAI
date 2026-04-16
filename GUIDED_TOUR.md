@@ -940,7 +940,7 @@ Ninety-six layers. The exact layer count of GPT-3. In ~820 lines of C++ on a lap
 ### Step 12 — Hierarchical weight quantization (the "organist" trick)
 
 ```bash
-./minai --random=1 --batch=16 --blocks=4 --layernorm=1 --steps=3000 --extra_demos=1
+./minai --random=1 --seq_len=32 --batch=16 --blocks=4 --layernorm=1 --steps=10000 --extra_demos=1
 ```
 
 After training finishes, the program runs three bonus demos. The first quantizes the trained `Wout` matrix three ways — Q8 flat, Q4 flat, Q4 with hierarchical scaling — and reports the precision cost of each. The hierarchical Q4 uses a "feet" (global) scale, a "left hand" (per-column) scale, and a "right hand" (per-weight 4-bit) index. This is the compression scheme behind llama.cpp's Q4_K_M format that lets Llama-2 70B run on a 64 GB laptop.
@@ -949,9 +949,11 @@ After training finishes, the program runs three bonus demos. The first quantizes
 
 ### Step 13 — Speculative decoding (fast cortex + slow cortex)
 
-Same command as Step 12. The second demo trains a smaller "draft" model (half the block count of the big one, everything else the same), then measures how often the draft and big model agree on the held-out set. The agreement rate is exactly the *expected acceptance rate* of speculative decoding — the mainstream inference optimization used by every frontier model (GPT-4, Claude, Gemini, llama.cpp, vLLM).
+Same command as Step 12 (which uses `--seq_len=32` for enough windows to populate a good histogram). The second demo trains a tiny 1-block, no-FFN, no-LayerNorm "draft" — the classic 1,216-param MinAI — then prints a side-by-side rollout on one held-out sequence, an accepted-tokens histogram across all held-out windows (groups of K=4 consecutive positions), and an honest speedup formula that accounts for the draft's own compute cost.
 
-**The lesson.** The big model's forward pass is dominated by loading its weights from memory, not by computing anything. Loading those weights once to verify `K=4` draft-proposed tokens costs almost the same as loading them once to produce `1` token. So if the draft is right 80% of the time, the big model effectively produces ~3 tokens per forward pass — a near-3× throughput win at zero quality cost because the big model has final say. It maps almost exactly onto the fast-subcortical vs slow-cortical split in biological brains.
+**How the verify-K-in-one-pass trick works.** This is the core cleverness of speculative decoding, worth spelling out because it is not obvious. In normal (autoregressive) inference, producing one new token requires one forward pass of the big model. Spec decoding replaces that with: (1) the draft predicts K candidate tokens one at a time (K cheap forward passes), then (2) the big model runs ONE forward pass that receives the draft-proposed prefix + K tokens and outputs its own argmax at *every* position in one go (transformers are embarrassingly parallel across sequence positions). The big model's output at position `t` tells you what the big model *would have produced* at `t`. Compare against draft[0..K-1]: accept tokens from left to right up until the first disagreement, then take the big model's argmax at the disagreeing position, discard the rest of the draft's guesses. Net output: one big-model forward delivers between 1 and K+1 tokens depending on agreement. Cost: `K * C_draft + 1 * C_big`. That is the source of the speedup — amortizing the expensive big-forward over multiple accepted draft tokens.
+
+**The lesson.** Our tiny 1-block draft struggles on a 32-digit random reversal; agreement lands around 15-20%, the histogram shows most windows accepting zero tokens, and the "honest speedup" comes out to about 0.8× — meaning spec decoding would *slow this configuration down*. That is itself the lesson: a draft must be both much cheaper AND frequently right to help. The reference table in the demo output shows what speedup you'd get at various agreement rates and cost ratios — at 80% agreement with a 10× cheaper draft, the speedup jumps to 2.4×, which is roughly what production systems achieve pairing a 1-7B draft with a 70B verifier.
 
 ### Step 14 — KV cache tiering (Miller's 7 in silicon)
 

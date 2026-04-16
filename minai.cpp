@@ -1691,122 +1691,189 @@ static void train_silent(int steps) {
     }
 }
 
+// Small helper: parameter count for a given config (same math as in main()).
+static int params_for_config(const Config& c) {
+    int base = VOCAB * D_MODEL + c.seq_len * D_MODEL + D_MODEL * VOCAB;
+    int per_block = 3 * D_MODEL * D_MODEL + (c.use_ffn ? 2 * D_MODEL * D_FF : 0);
+    if (c.use_layernorm) {
+        per_block += 2 * (2 * D_MODEL);
+        base      += 2 * D_MODEL;
+    }
+    return base + c.num_blocks * per_block;
+}
+
+// Expected consecutive-matches in a window of K, assuming independent per-
+// position match probability p. This is the formula for the expected number
+// of tokens a speculative-decoding draft gets accepted per verification
+// window: sum_{k=1..K} P(first k match) = sum p^k = p*(1-p^K)/(1-p).
+static float expected_accepted(float p, int K) {
+    if (p >= 0.9999f) return (float)K;
+    return p * (1.0f - std::pow(p, K)) / (1.0f - p);
+}
+
 void demo_speculative() {
     std::printf("\n================================================================\n");
-    std::printf(" Demo: Speculative decoding (draft model vs big model agreement)\n");
+    std::printf(" Demo: Speculative decoding (fast-cortex proposes, slow-cortex verifies)\n");
     std::printf("================================================================\n");
 
-    // Save the big model.
+    // Save the big model first so we can always restore it.
     WeightSnapshot big;
     snapshot_save(big);
 
-    // Train a DRAFT model: same task, but ~half the compute of the big
-    // model. Real-world speculative decoding typically pairs a 70B verifier
-    // with a 1-7B drafter — not a wildly different architecture, just a
-    // smaller one. We emulate that by halving the block count (minimum 1),
-    // keeping FFN and LayerNorm on so the draft is a competent model, just
-    // shallower.
+    // Train a DRAFT model. Real-world speculative decoding pairs drastically
+    // different sizes: a ~1B draft proposing for a ~70B target (~70x ratio).
+    // We emulate that spirit by using 1 block + no FFN + no LayerNorm — the
+    // "classic MinAI" architecture — as our draft, regardless of how big the
+    // big model is. On the default --blocks=4 --ffn=1 --layernorm=1 big, that
+    // gives roughly a 9x compute ratio, which is close to realistic.
     Config saved_cfg = cfg;
-    cfg.num_blocks = std::max(1, saved_cfg.num_blocks / 2);
-    // Keep task / random / batch / seq_len / ffn / ln / causal the same.
+    cfg.num_blocks    = 1;
+    cfg.use_ffn       = false;
+    cfg.use_layernorm = false;
     rng_state = 0xDEADC0DEu;   // reproducible draft init, distinct from big
     init_weights();
-    int draft_steps = std::max(200, saved_cfg.num_steps / 2);
-    std::printf(" Training draft model (%d blocks, ffn=%s, ln=%s) for %d steps...\n",
-                cfg.num_blocks,
-                cfg.use_ffn ? "on" : "off",
-                cfg.use_layernorm ? "on" : "off",
-                draft_steps);
+    int draft_steps = std::max(1000, saved_cfg.num_steps);
+    std::printf(" Training draft (1 block, ffn=off, ln=off) for %d steps...\n", draft_steps);
     train_silent(draft_steps);
 
-    // Snapshot the draft model and restore config.
+    // Snapshot the draft model and restore the big config for eval.
     WeightSnapshot draft;
     snapshot_save(draft);
     cfg = saved_cfg;
 
-    // For each evaluation example, predict with BOTH big and draft and count
-    // positions where they agree.
-    int total_positions = 0, agreed = 0;
+    // Parameter counts and a crude compute-cost proxy.
+    int big_params   = params_for_config(saved_cfg);
+    int draft_params = params_for_config(draft.cfg_at_save);
+    // Cost proxy per block: attention ~ 3 units, FFN ~ 4 units.
+    auto block_cost = [](const Config& c) -> float {
+        return (float)c.num_blocks * (3.0f + (c.use_ffn ? 4.0f : 0.0f));
+    };
+    float big_cost   = block_cost(saved_cfg);
+    float draft_cost = block_cost(draft.cfg_at_save);
+    float cost_ratio = draft_cost / big_cost;    // C_draft / C_big
 
-    // Use either the fixed example or the held-out set, depending on --random.
-    int num_eval_examples = cfg.random ? NUM_EVAL : 1;
-    int eval_tokens[MAX_SEQ_LEN];
+    // Run big and draft on every held-out example, storing per-position
+    // predictions so we can both visualize and aggregate.
+    const int T = cfg.seq_len;
+    const int K = std::min(4, T);
+    const int num_eval = cfg.random ? NUM_EVAL : 1;
 
-    for (int e = 0; e < num_eval_examples; ++e) {
-        if (cfg.random) {
-            for (int t = 0; t < cfg.seq_len; ++t) eval_tokens[t] = held_out_tokens[e][t];
-        } else {
-            for (int t = 0; t < cfg.seq_len; ++t) eval_tokens[t] = t % VOCAB;
-        }
+    std::vector<std::vector<int>> inputs     (num_eval, std::vector<int>(T));
+    std::vector<std::vector<int>> targets    (num_eval, std::vector<int>(T));
+    std::vector<std::vector<int>> big_preds  (num_eval, std::vector<int>(T));
+    std::vector<std::vector<int>> draft_preds(num_eval, std::vector<int>(T));
 
-        int big_preds  [MAX_SEQ_LEN];
-        int draft_preds[MAX_SEQ_LEN];
+    for (int e = 0; e < num_eval; ++e) {
+        if (cfg.random) { for (int t = 0; t < T; ++t) inputs[e][t] = held_out_tokens[e][t]; }
+        else            { for (int t = 0; t < T; ++t) inputs[e][t] = t % VOCAB; }
+        int tgt[MAX_SEQ_LEN];
+        make_target(inputs[e].data(), tgt);
+        for (int t = 0; t < T; ++t) targets[e][t] = tgt[t];
 
         snapshot_load(big);
-        forward(eval_tokens);
-        for (int t = 0; t < cfg.seq_len; ++t) big_preds[t] = argmax_row(probs[t], VOCAB);
+        forward(inputs[e].data());
+        for (int t = 0; t < T; ++t) big_preds[e][t] = argmax_row(probs[t], VOCAB);
 
         snapshot_load(draft);
-        forward(eval_tokens);
-        for (int t = 0; t < cfg.seq_len; ++t) draft_preds[t] = argmax_row(probs[t], VOCAB);
+        forward(inputs[e].data());
+        for (int t = 0; t < T; ++t) draft_preds[e][t] = argmax_row(probs[t], VOCAB);
+    }
 
-        for (int t = 0; t < cfg.seq_len; ++t) {
-            total_positions++;
-            if (big_preds[t] == draft_preds[t]) agreed++;
+    // Aggregate: per-position agreement plus per-window accepted-count histogram.
+    // Windows are non-overlapping chunks of K starting at position 0.
+    int total_positions = num_eval * T;
+    int agreed_positions = 0;
+    std::vector<int> hist(K + 1, 0);    // hist[i] = windows where i tokens were accepted
+    int total_windows = 0;
+    long long sum_accepted = 0;
+    for (int e = 0; e < num_eval; ++e) {
+        for (int t = 0; t < T; ++t)
+            if (big_preds[e][t] == draft_preds[e][t]) ++agreed_positions;
+        for (int ws = 0; ws + K <= T; ws += K) {
+            int accepted = 0;
+            for (int k = 0; k < K; ++k) {
+                if (draft_preds[e][ws + k] == big_preds[e][ws + k]) ++accepted;
+                else break;
+            }
+            hist[accepted]++;
+            sum_accepted += accepted;
+            total_windows++;
         }
     }
+    float agreement    = (float)agreed_positions / (float)total_positions;
+    float mean_accept  = total_windows ? (float)sum_accepted / (float)total_windows : 0;
+    float speedup_meas = (mean_accept + 1.0f) / (K * cost_ratio + 1.0f);
 
-    float acceptance = (float)agreed / (float)total_positions;
-
-    // Cost-ratio assumption: both models use the same per-block cost
-    // (since the draft now has the same ffn/ln setup as big), so the ratio
-    // is just big.num_blocks / draft.num_blocks.
-    int draft_blocks = draft.cfg_at_save.num_blocks;
-    float R = (float)saved_cfg.num_blocks / (float)draft_blocks;
-
-    // With speculative decoding + K drafts verified per big pass, expected
-    // tokens per big pass = 1 + E[geom(accept)]; for illustration take K=4.
-    // Baseline is 1 token per big pass. With acceptance a, the big model
-    // still runs once per step but verifies K drafts. Expected accepted
-    // tokens per big pass = (1 - a^(K+1)) / (1 - a)   [minus 1 for the final
-    // verifier token], clamped. Simplified heuristic speedup:
-    int K = 4;
-    float expected_tokens_per_big_pass = 1.0f;
-    if (acceptance < 0.9999f) {
-        expected_tokens_per_big_pass = (1.0f - std::pow(acceptance, K + 1)) / (1.0f - acceptance);
-    } else {
-        expected_tokens_per_big_pass = (float)(K + 1);
-    }
-    float speedup = expected_tokens_per_big_pass;   // per big-model forward pass
-
-    std::printf("\n Task                : %s%s\n", task_name(saved_cfg.task), saved_cfg.random ? " (random)" : " (fixed)");
-    std::printf(" Big model           : %d blocks, ffn=%s, ln=%s\n",
+    // --- Report ----------------------------------------------------------
+    std::printf("\n Task        : %s (%s, seq_len=%d, batch=%d)\n",
+                task_name(saved_cfg.task),
+                saved_cfg.random ? "random" : "fixed", T, saved_cfg.batch);
+    std::printf(" Big   model : %d blocks, ffn=%s, ln=%s  (%d params, cost %.0f units)\n",
                 saved_cfg.num_blocks,
                 saved_cfg.use_ffn ? "on" : "off",
-                saved_cfg.use_layernorm ? "on" : "off");
-    std::printf(" Draft model         : %d blocks, ffn=%s, ln=%s (half the depth of big)\n",
-                draft.cfg_at_save.num_blocks,
-                draft.cfg_at_save.use_ffn ? "on" : "off",
-                draft.cfg_at_save.use_layernorm ? "on" : "off");
-    std::printf(" Positions compared  : %d  (%d examples * %d positions)\n",
-                total_positions, num_eval_examples, cfg.seq_len);
-    std::printf(" Draft/big agreement : %d / %d = %.1f%%\n",
-                agreed, total_positions, acceptance * 100.0f);
-    std::printf(" Expected speedup    : %.2fx (with K=%d drafts per big pass, cost ratio ~%.1f)\n",
-                speedup, K, R);
+                saved_cfg.use_layernorm ? "on" : "off",
+                big_params, big_cost);
+    std::printf(" Draft model : 1 block, ffn=off, ln=off  (%d params, cost %.0f units)\n",
+                draft_params, draft_cost);
+    std::printf(" Cost ratio  : C_draft / C_big = %.3f   (draft ~%.1fx cheaper per forward)\n",
+                cost_ratio, 1.0f / cost_ratio);
 
-    if (!saved_cfg.random) {
-        std::printf("\n (Note: with --random=0 both models memorize the same single example,\n");
-        std::printf("  so agreement is trivially 100%%. For a realistic test, rerun with --random=1.)\n");
+    // Per-example rollout: pick the first eval example and print the
+    // predictions side by side so the concept is visible, not just numerical.
+    std::printf("\n --- Rollout on held-out[0] (K=%d drafts per big verify pass) ---\n", K);
+    std::printf(" input  :"); for (int t = 0; t < T; ++t) std::printf(" %d", inputs     [0][t]); std::printf("\n");
+    std::printf(" target :"); for (int t = 0; t < T; ++t) std::printf(" %d", targets    [0][t]); std::printf("\n");
+    std::printf(" big    :"); for (int t = 0; t < T; ++t) std::printf(" %d", big_preds  [0][t]); std::printf("\n");
+    std::printf(" draft  :"); for (int t = 0; t < T; ++t) std::printf(" %d", draft_preds[0][t]); std::printf("\n");
+    std::printf(" match  :"); for (int t = 0; t < T; ++t) std::printf(" %c", big_preds[0][t] == draft_preds[0][t] ? 'Y' : '.'); std::printf("\n");
+
+    // Aggregate stats.
+    std::printf("\n --- Aggregate over %d held-out sequences = %d windows of K=%d ---\n",
+                num_eval, total_windows, K);
+    std::printf(" Per-position agreement      : %d / %d = %.1f%%\n",
+                agreed_positions, total_positions, agreement * 100.0f);
+    std::printf(" Mean tokens accepted/window : %.2f (max K=%d)\n", mean_accept, K);
+
+    // Histogram. hist[i] = number of windows where exactly i tokens were accepted.
+    std::printf("\n Accepted-tokens histogram:\n");
+    int hist_max = 0;
+    for (int i = 0; i <= K; ++i) if (hist[i] > hist_max) hist_max = hist[i];
+    for (int i = 0; i <= K; ++i) {
+        int bar_len = hist_max > 0 ? (hist[i] * 50) / hist_max : 0;
+        std::printf("   %d accepted : %5d windows (%5.1f%%) ",
+                    i, hist[i], total_windows ? 100.0f * hist[i] / total_windows : 0.0f);
+        for (int b = 0; b < bar_len; ++b) std::printf("\xe2\x96\x88"); // full block
+        std::printf("\n");
     }
 
-    std::printf("\n Conclusion: the draft model agrees with the big model %.0f%% of the\n", acceptance * 100.0f);
-    std::printf(" time. In real speculative decoding, that translates to roughly that\n");
-    std::printf(" many tokens being produced per big-model forward pass — which is\n");
-    std::printf(" dominated by memory bandwidth, so getting %.1f tokens out of the same\n", speedup);
-    std::printf(" weight-load gives a wall-clock speedup of nearly the same factor.\n");
+    // Honest speedup, with a reference table illustrating the trade-off.
+    std::printf("\n --- Speedup analysis (honest: accounts for draft cost) ---\n");
+    std::printf(" formula : speedup = (E[accepted] + 1) / (K * C_draft/C_big + 1)\n");
+    std::printf(" measured: speedup = (%.2f + 1) / (%d * %.3f + 1) = %.2fx\n",
+                mean_accept, K, cost_ratio, speedup_meas);
 
-    // Restore the big model so any subsequent output uses the trained weights.
+    std::printf("\n Reference: speedup at varying agreement rates and cost ratios (K=%d)\n", K);
+    std::printf("                       | agree 60%% | agree 80%% | agree 90%%\n");
+    std::printf("                       +-----------+-----------+----------\n");
+    struct Row { const char* label; float ratio; } rows[] = {
+        { " draft 10x cheaper    ", 0.10f },
+        { " draft  5x cheaper    ", 0.20f },
+        { " draft  2x cheaper    ", 0.50f },
+    };
+    for (const Row& r : rows) {
+        float s60 = (expected_accepted(0.60f, K) + 1) / (K * r.ratio + 1);
+        float s80 = (expected_accepted(0.80f, K) + 1) / (K * r.ratio + 1);
+        float s90 = (expected_accepted(0.90f, K) + 1) / (K * r.ratio + 1);
+        std::printf(" %s |    %5.2fx |    %5.2fx |    %5.2fx\n", r.label, s60, s80, s90);
+    }
+
+    std::printf("\n Key insight: the draft must be both MUCH cheaper AND frequently right.\n");
+    std::printf(" If draft and big have similar cost and agreement is modest, speculative\n");
+    std::printf(" decoding can actually *slow down* inference. Production systems pair a\n");
+    std::printf(" tiny (1-7B) draft with a huge (70B+) verifier to get both properties at\n");
+    std::printf(" once — small enough to run fast, big enough to be mostly right.\n");
+
+    // Restore the big model so the rest of the program uses trained weights.
     snapshot_load(big);
     cfg = saved_cfg;
 }
