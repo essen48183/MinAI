@@ -795,15 +795,75 @@ Now the model sees a fresh random 8-digit sequence every training step. It canno
 
 **The lesson.** This is the moment the word "generalization" becomes concrete. Memorizing is easy; learning a rule is hard. Real LLMs are trained almost entirely in this regime — every example seen once, with held-out data measuring whether the model is actually *learning* vs *storing*. The gap between train accuracy (which jitters wildly from step to step) and held-out accuracy (which rises smoothly) is the heartbeat of machine learning.
 
-### Step 4 — Causal masking actually bites
+### Step 4 — Causal masking actually bites, and here is exactly why
 
 ```bash
 ./minai --random=1 --causal=1 --steps=2000
 ```
 
-Same setup, but attention can only look backward. For reversal, position 0 needs to see position 7 — and now can't. Held-out accuracy will plateau around 12% (barely above random).
+Same setup as before, but attention can only look backward. For reversal, position 0 needs to see position 7 — and now can't. Over 2000 steps you'll see held-out accuracy stuck at about 10–15%, barely above the random baseline. You would be forgiven for concluding the model just "can't learn" this task. But if you run it much longer:
 
-**The lesson.** Chapter 5 said attention is the mechanism. Here you *see* what happens when attention is crippled: the model loses the ability to learn the task. Causal masking is not an optional decoration; it is an architectural choice with real consequences. (It's the right choice for *generating* text because you train on predict-next-token, but it is the wrong choice for reversal.)
+```bash
+./minai --random=1 --causal=1 --steps=200000
+```
+
+Something fascinating happens. For roughly the first 5,500 steps the loss stays flat around 2.30 and held-out accuracy is stuck at ~10%. Then, suddenly, between step 5,500 and step 9,000, the loss plunges from 2.30 to 1.30 and held-out accuracy leaps from 17% to 55%. This sudden breakthrough after a long apparent stall is a real named phenomenon, **grokking** (Power et al., 2022). The model spends thousands of steps quietly reorganizing its internal representation without visible progress, then crosses a threshold and the loss collapses almost instantly. From that point on, held-out plateaus at about **55%**, and *will never go higher no matter how long you train*.
+
+#### Why exactly 55%? A counting argument.
+
+With causal masking on an 8-digit reversal, each output position `t` needs to predict `input[7-t]` while only being allowed to see `input[0..t]`:
+
+| output `t` | needs `input[7-t]` | allowed to see | best possible |
+|---|---|---|---|
+| 0 | `input[7]` | `input[0]`      | 10% (random guess) |
+| 1 | `input[6]` | `input[0..1]`   | 10% |
+| 2 | `input[5]` | `input[0..2]`   | 10% |
+| 3 | `input[4]` | `input[0..3]`   | 10% |
+| 4 | `input[3]` | `input[0..4]` ← includes `input[3]` | 100% |
+| 5 | `input[2]` | `input[0..5]` ← includes `input[2]` | 100% |
+| 6 | `input[1]` | `input[0..6]` ← includes `input[1]` | 100% |
+| 7 | `input[0]` | `input[0..7]` ← includes `input[0]` | 100% |
+
+The last four positions *can* see the digit they need to retrieve and learn to reproduce it perfectly. The first four positions are being asked to predict an input they are not allowed to see. Averaging across all eight positions:
+
+```
+(4 × 10% + 4 × 100%) / 8 = 55%
+```
+
+That is the architectural ceiling. Your model converges to 55.5%. That is not a coincidence — it is the ceiling being hit.
+
+#### Why the ceiling is not just "hard" — it is mathematically impossible to beat
+
+In `--random=1` mode, each input digit is drawn **independently and uniformly** from 0-9. So for output position 0, which may only observe `input[0]` but needs to predict `input[7]`:
+
+```
+P(input[7] | input[0]) = P(input[7])
+```
+
+The conditional probability equals the unconditional probability. Knowing `input[0]` gives you **zero bits of information** about `input[7]` — they are as unrelated as two separate dice rolls. This is a property of the *data generator*, not the *model*. No function of `input[0]` can predict `input[7]` better than the marginal distribution, because no such function exists. Not a bigger model, not more training, not a cleverer architecture. If the information the model would need is not in its input, no model can conjure it.
+
+The four unreachable positions therefore converge to cross-entropy loss `log(10) ≈ 2.30` (uniform guessing). The four reachable positions converge to essentially zero loss. Averaged over all eight positions:
+
+```
+loss ≈ (4 × 2.30 + 4 × 0) / 8 ≈ 1.15
+```
+
+Which is exactly the plateau your program settles at after grokking. The ceiling is not a flaw in the model or a failure of training — it is the model being *correct*: doing precisely what the available information allows, no more, no less.
+
+#### But real language models use causal masks and work fine — why?
+
+Because natural language is loaded with statistical structure. "The cat sat on the ___" strongly predicts "mat" or "couch" or "floor". The conditional distribution `P(next_word | previous_words)` is *vastly* narrower than the unconditional `P(any_word)`. Past tokens carry enormous information about future tokens, so a causal language model can extract meaningful signal from what it is allowed to see.
+
+Random digit reversal has the *opposite* property: past positions carry no information about future positions, because the data was generated independently. Causal masking is *fine* for tasks where the future depends on the past; it is *fatal* for tasks where the future is statistically independent of the past.
+
+#### The takeaway — a core ML engineering skill
+
+When a model's accuracy plateaus, there are two very different possibilities:
+
+- **(a)** It has not found the solution yet. More compute, more data, better architecture, different hyperparameters might unstick it.
+- **(b)** The information the model would need to improve is not in its input. No amount of anything will help.
+
+Distinguishing these two cases is one of the core skills of a machine-learning engineer. Here — because we know exactly how the data is generated — we can *prove* this is case (b). The model learned every bit there was to learn; the remainder is not there to be learned. That proof comes out of the table above plus the independence property of the data. It is the same style of argument Claude Shannon formalized in 1948 for information theory, and it still runs every decision in the field.
 
 ### Step 5 — Batch training smooths the curve
 
