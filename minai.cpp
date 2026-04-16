@@ -13,9 +13,11 @@
 //
 //  WHAT THIS VERSION ADDS OVER THE MINIMUM
 //    Architecture:
-//      --blocks=N     stack N transformer layers (1..MAX_BLOCKS)
-//      --ffn=0|1      enable the feed-forward sub-layer in each block
-//      --causal=0|1   causal attention mask (a la GPT)
+//      --blocks=N      stack N transformer layers (1..MAX_BLOCKS)
+//      --ffn=0|1       enable the feed-forward sub-layer in each block
+//      --causal=0|1    causal attention mask (a la GPT)
+//      --layernorm=0|1 Pre-LN normalization before each sub-layer; required
+//                      to train deep stacks (see Part 7b)
 //    Data:
 //      --random=0|1   train on random sequences (forces the model to
 //                     generalize instead of memorize the single fixed example)
@@ -66,7 +68,17 @@
 //  reallocation; only the relevant *prefix* of each buffer is used.
 // ----------------------------------------------------------------------------
 
-constexpr int MAX_BLOCKS  = 4;    // upper bound on --blocks
+constexpr int MAX_BLOCKS  = 96;   // upper bound on --blocks. 96 matches GPT-3's
+                                  // layer count so you can write --blocks=96 and
+                                  // literally run a model of GPT-3 depth (with
+                                  // ridiculously tiny width). Memory cost is about
+                                  // 75 KB of globals per block = ~7 MB at the max,
+                                  // which is nothing on modern hardware.
+                                  // NOTE: without LayerNorm, stacks deeper than
+                                  // ~16 often fail to train — gradients vanish or
+                                  // explode. That failure mode is itself a useful
+                                  // lesson about why real transformers include
+                                  // layer normalization between every sub-block.
 constexpr int MAX_SEQ_LEN = 32;   // upper bound on --seq_len
 constexpr int MAX_BATCH   = 128;  // upper bound on --batch
 constexpr int NUM_EVAL    = 64;   // size of the held-out eval set (when --random=1)
@@ -87,10 +99,13 @@ constexpr float LR_OUT  = 0.02f;
 //    per-block FFN  = 3*D*D (QKV) + 2*D*D_FF (FFN)              = 1,792
 //    per-block noFFN= 3*D*D (QKV)                               =   768
 //
-//    --blocks=1 --ffn=0   (classic)     |  1,216
-//    --blocks=1 --ffn=1   (default)     |  2,240
-//    --blocks=2 --ffn=1                 |  4,032
-//    --blocks=4 --ffn=1                 |  7,616
+//    --blocks=1 --ffn=0   (classic)     |   1,216
+//    --blocks=1 --ffn=1   (default)     |   2,240
+//    --blocks=2 --ffn=1                 |   4,032
+//    --blocks=4 --ffn=1                 |   7,616
+//    --blocks=16 --ffn=1                |  29,120
+//    --blocks=32 --ffn=1                |  57,792
+//    --blocks=96 --ffn=1  (GPT-3 depth) | 172,480
 //
 //  Bumping --seq_len=16 adds another 8*D = 128 params (more position rows).
 //  Bumping --batch does NOT change the parameter count (it only affects how
@@ -169,14 +184,15 @@ static float rand_uniform(float scale) {
 enum class Task { Reverse, Sort, Shift, ModSum };
 
 struct Config {
-    int  num_blocks = 1;
-    bool use_ffn    = true;
-    bool use_causal = false;
-    bool random     = false;
-    int  seq_len    = 8;
-    int  batch      = 1;
-    Task task       = Task::Reverse;
-    int  num_steps  = 800;
+    int  num_blocks    = 1;
+    bool use_ffn       = true;
+    bool use_causal    = false;
+    bool use_layernorm = false;   // Pre-LN around each sub-layer (see Part 7b)
+    bool random        = false;
+    int  seq_len       = 8;
+    int  batch         = 1;
+    Task task          = Task::Reverse;
+    int  num_steps     = 800;
 };
 static Config cfg;
 
@@ -207,6 +223,8 @@ static void print_usage(const char* argv0) {
         "  --blocks=N      stack N transformer layers (1..%d, default 1)\n"
         "  --ffn=0|1       feed-forward sub-layer on/off (default 1)\n"
         "  --causal=0|1    causal mask on/off (default 0)\n"
+        "  --layernorm=0|1 Pre-LN normalization before each sub-layer; makes\n"
+        "                  deep stacks trainable (default 0)\n"
         "  --random=0|1    random training sequences (default 0 = fixed)\n"
         "  --seq_len=N     sequence length 1..%d (default 8)\n"
         "  --batch=B       examples per step 1..%d (default 1)\n"
@@ -221,8 +239,9 @@ static void parse_args(int argc, char** argv) {
         const char* a = argv[i];
         if      (std::strncmp(a, "--blocks=",  9) == 0) cfg.num_blocks = std::atoi(a + 9);
         else if (std::strncmp(a, "--ffn=",     6) == 0) cfg.use_ffn    = std::atoi(a + 6) != 0;
-        else if (std::strncmp(a, "--causal=",  9) == 0) cfg.use_causal = std::atoi(a + 9) != 0;
-        else if (std::strncmp(a, "--random=",  9) == 0) cfg.random     = std::atoi(a + 9) != 0;
+        else if (std::strncmp(a, "--causal=",  9) == 0) cfg.use_causal    = std::atoi(a + 9) != 0;
+        else if (std::strncmp(a, "--layernorm=",12) == 0) cfg.use_layernorm = std::atoi(a + 12) != 0;
+        else if (std::strncmp(a, "--random=",  9) == 0) cfg.random        = std::atoi(a + 9) != 0;
         else if (std::strncmp(a, "--seq_len=",10) == 0) cfg.seq_len    = std::atoi(a + 10);
         else if (std::strncmp(a, "--batch=",   8) == 0) cfg.batch      = std::atoi(a + 8);
         else if (std::strncmp(a, "--task=",    7) == 0) cfg.task       = parse_task(a + 7);
@@ -279,6 +298,17 @@ float W2[MAX_BLOCKS][D_FF   ][D_MODEL];
 // argmax is the prediction.
 float Wout[D_MODEL][VOCAB];
 
+// ---- LayerNorm parameters (used only when --layernorm=1) -------------------
+// LayerNorm has two learned per-channel vectors: a "gain" (multiplier) and a
+// "bias" (offset). See Part 7b for the math. We keep:
+//   - Two LNs per block (one before attention, one before FFN), Pre-LN style.
+//   - One final LN just before the output projection.
+// gain initialized to 1, bias initialized to 0, which makes LN an identity
+// at the start of training; the model can learn to move away from that.
+float gain1[MAX_BLOCKS][D_MODEL],  bias1[MAX_BLOCKS][D_MODEL];   // before attention
+float gain2[MAX_BLOCKS][D_MODEL],  bias2[MAX_BLOCKS][D_MODEL];   // before FFN
+float gain_f[D_MODEL],             bias_f[D_MODEL];              // before Wout
+
 // ============================================================================
 //  PART 5 — ACTIVATION BUFFERS
 // ============================================================================
@@ -304,6 +334,23 @@ float ff_pre[MAX_BLOCKS][MAX_SEQ_LEN][D_FF   ];
 float ff_act[MAX_BLOCKS][MAX_SEQ_LEN][D_FF   ];
 float ff_out[MAX_BLOCKS][MAX_SEQ_LEN][D_MODEL];
 
+// LayerNorm forward caches. Needed by the LN backward pass. Only populated
+// when cfg.use_layernorm is true.
+//   ln*_out    — the LN output (normalized, then gain-scaled and bias-shifted).
+//                This is what feeds into Q/K/V (for ln1) or W1 (for ln2).
+//   ln*_xhat   — the normalized-but-not-yet-gain-scaled value (x - mean)/std.
+//                Stored because the backward needs both xhat and gain.
+//   ln*_invstd — 1/std per token. Saves a reciprocal + sqrt in the backward.
+float ln1_out   [MAX_BLOCKS][MAX_SEQ_LEN][D_MODEL];
+float ln1_xhat  [MAX_BLOCKS][MAX_SEQ_LEN][D_MODEL];
+float ln1_invstd[MAX_BLOCKS][MAX_SEQ_LEN];
+float ln2_out   [MAX_BLOCKS][MAX_SEQ_LEN][D_MODEL];
+float ln2_xhat  [MAX_BLOCKS][MAX_SEQ_LEN][D_MODEL];
+float ln2_invstd[MAX_BLOCKS][MAX_SEQ_LEN];
+float ln_f_out   [MAX_SEQ_LEN][D_MODEL];
+float ln_f_xhat  [MAX_SEQ_LEN][D_MODEL];
+float ln_f_invstd[MAX_SEQ_LEN];
+
 float logits[MAX_SEQ_LEN][VOCAB];
 float probs [MAX_SEQ_LEN][VOCAB];
 
@@ -318,6 +365,10 @@ float g_Wv[MAX_BLOCKS][D_MODEL][D_MODEL];
 float g_W1[MAX_BLOCKS][D_MODEL][D_FF   ];
 float g_W2[MAX_BLOCKS][D_FF   ][D_MODEL];
 float g_Wout[D_MODEL][VOCAB];
+// LN gradients (accumulated across a batch like the other weight grads).
+float g_gain1[MAX_BLOCKS][D_MODEL], g_bias1[MAX_BLOCKS][D_MODEL];
+float g_gain2[MAX_BLOCKS][D_MODEL], g_bias2[MAX_BLOCKS][D_MODEL];
+float g_gain_f[D_MODEL],            g_bias_f[D_MODEL];
 
 float g_X_block[MAX_BLOCKS + 1][MAX_SEQ_LEN][D_MODEL];
 float g_Q     [MAX_BLOCKS][MAX_SEQ_LEN][D_MODEL];
@@ -358,6 +409,16 @@ void init_weights() {
     }
 
     for (int d = 0; d < D_MODEL; ++d) for (int v = 0; v < VOCAB; ++v) Wout[d][v] = rand_uniform(0.25f);
+
+    // LayerNorm parameters. gain=1, bias=0 => LN starts life as the identity,
+    // so the model behaves as if LN isn't there at step 0 and can learn to
+    // move away. Same init as every real transformer.
+    for (int b = 0; b < cfg.num_blocks; ++b)
+        for (int d = 0; d < D_MODEL; ++d) {
+            gain1[b][d] = 1.0f; bias1[b][d] = 0.0f;
+            gain2[b][d] = 1.0f; bias2[b][d] = 0.0f;
+        }
+    for (int d = 0; d < D_MODEL; ++d) { gain_f[d] = 1.0f; bias_f[d] = 0.0f; }
 }
 
 // ============================================================================
@@ -379,6 +440,107 @@ void softmax_inplace(float* row, int n) {
 }
 
 // ============================================================================
+//  PART 7b — LAYER NORMALIZATION
+// ============================================================================
+//  Problem: as you stack more transformer layers, the scale of the activation
+//  vectors drifts. A deep stack without normalization either shrinks them to
+//  zero (vanishing gradients, nothing trains) or blows them up (NaN). The
+//  residual connection alone is not enough past ~10-20 layers.
+//
+//  Solution: after every sub-layer input, re-center and re-scale each token's
+//  vector to have zero mean and unit variance across its D_MODEL components.
+//  Then allow two learned per-channel knobs (gain and bias) so the model can
+//  scale/shift the normalized value back out if it wants to:
+//
+//      y = ((x - mean(x)) / std(x)) * gain + bias
+//
+//  mean and std are taken across the D_MODEL axis of a SINGLE TOKEN. Each
+//  token is normalized independently. Hence "layer normalization" — it
+//  normalizes across the layer dimension, not across the batch.
+//
+//  We use "Pre-LN": LN is applied BEFORE each sub-layer (attention, FFN),
+//  and the residual connection wraps the ORIGINAL (un-normalized) input:
+//
+//      H1 = X + Attn(LN(X))
+//      H2 = H1 + FFN(LN(H1))
+//
+//  Pre-LN is what GPT-2+ uses; the original 2017 transformer used Post-LN
+//  (LN applied AFTER each residual sum), which is much less stable in deep
+//  networks. Pre-LN lets you train 100+ layers without losses blowing up.
+//
+//  There is also one final LayerNorm right before the output projection,
+//  so the vector feeding into Wout has a predictable scale.
+//
+//  [PDP-11 sidebar] LayerNorm needs a square root and a reciprocal per
+//  token — neither of which the PDP-11 had as instructions. A faithful
+//  fixed-point port would use a Newton-Raphson-style approximate sqrt,
+//  or a lookup table for 1/sqrt(x+eps). We just use std::sqrt here.
+// ----------------------------------------------------------------------------
+
+// Forward LN on one token's D-vector. Writes y[D] and caches xhat[D] + invstd
+// so the backward pass doesn't have to recompute mean and std.
+static void layernorm_forward_row(
+    const float* x,              // input  [D_MODEL]
+    float*       y,              // output [D_MODEL]
+    const float* gain,           // [D_MODEL]
+    const float* bias,           // [D_MODEL]
+    float*       xhat_out,       // cache  [D_MODEL]  = (x - mean)/std
+    float*       invstd_out      // cache  scalar     = 1/std
+) {
+    const int D = D_MODEL;
+    const float eps = 1e-5f;
+    float mean = 0.0f;
+    for (int d = 0; d < D; ++d) mean += x[d];
+    mean /= (float)D;
+    float varsum = 0.0f;
+    for (int d = 0; d < D; ++d) { float diff = x[d] - mean; varsum += diff * diff; }
+    float invstd = 1.0f / std::sqrt(varsum / (float)D + eps);
+    *invstd_out = invstd;
+    for (int d = 0; d < D; ++d) {
+        float xh = (x[d] - mean) * invstd;
+        xhat_out[d] = xh;
+        y[d] = xh * gain[d] + bias[d];
+    }
+}
+
+// Backward LN on one token's D-vector.
+//   dy       : gradient at the LN output (after gain+bias)
+//   xhat     : cached (x - mean)/std from forward
+//   invstd   : cached 1/std
+//   gain     : the LN gain parameter
+//   g_gain   : [D] accumulator for gain gradient (+=)
+//   g_bias   : [D] accumulator for bias gradient (+=)
+//   dx_out   : [D] gradient at the LN input (written; caller decides +=/=)
+//
+// Math — detailed derivation in Chapter 9 of GUIDED_TOUR.md. Short form:
+//   Let dxhat_d = dy_d * gain_d.
+//   Let R = Σ dxhat_d, S = Σ (xhat_d * dxhat_d).
+//   Then dx_d = invstd * (dxhat_d - R/D - xhat_d * S/D).
+// All sums are across the D_MODEL axis of the single token.
+static void layernorm_backward_row(
+    const float* dy,
+    const float* xhat,
+    float        invstd,
+    const float* gain,
+    float*       g_gain,
+    float*       g_bias,
+    float*       dx_out
+) {
+    const int D = D_MODEL;
+    float dxhat[D_MODEL];
+    for (int d = 0; d < D; ++d) {
+        g_gain[d] += dy[d] * xhat[d];
+        g_bias[d] += dy[d];
+        dxhat[d]   = dy[d] * gain[d];
+    }
+    float R = 0.0f, S = 0.0f;
+    for (int d = 0; d < D; ++d) { R += dxhat[d]; S += xhat[d] * dxhat[d]; }
+    const float invD = 1.0f / (float)D;
+    for (int d = 0; d < D; ++d)
+        dx_out[d] = invstd * (dxhat[d] - R * invD - xhat[d] * S * invD);
+}
+
+// ============================================================================
 //  PART 8 — FORWARD PASS
 // ============================================================================
 //  Compute every activation up through `probs` (one probability distribution
@@ -394,16 +556,29 @@ static void forward_block(int b) {
     auto& X_in = X_block[b];
     auto& X_ot = X_block[b+1];
 
-    // Linear projections Q, K, V = X_in @ (Wq, Wk, Wv).
+    // Pre-LN: LayerNorm the block input before sending it into Q/K/V.
+    // The residual path (below) wraps the ORIGINAL X_in, not the LN output,
+    // which is what makes deep stacks trainable.
+    float (*attn_in)[D_MODEL] = X_in;
+    if (cfg.use_layernorm) {
+        for (int t = 0; t < T; ++t)
+            layernorm_forward_row(
+                X_in[t], ln1_out[b][t],
+                gain1[b], bias1[b],
+                ln1_xhat[b][t], &ln1_invstd[b][t]);
+        attn_in = ln1_out[b];
+    }
+
+    // Linear projections Q, K, V = attn_in @ (Wq, Wk, Wv).
     // Three matrix multiplies. Each gives a different learned "view" of the
     // same input. [PDP-11] Q8*Q8 products in a 32-bit accumulator, >>8 at end.
     for (int t = 0; t < T; ++t) {
         for (int j = 0; j < D_MODEL; ++j) {
             float q = 0, k = 0, v = 0;
             for (int i = 0; i < D_MODEL; ++i) {
-                q += X_in[t][i] * Wq[b][i][j];
-                k += X_in[t][i] * Wk[b][i][j];
-                v += X_in[t][i] * Wv[b][i][j];
+                q += attn_in[t][i] * Wq[b][i][j];
+                k += attn_in[t][i] * Wk[b][i][j];
+                v += attn_in[t][i] * Wv[b][i][j];
             }
             Q[b][t][j] = q; K[b][t][j] = k; V[b][t][j] = v;
         }
@@ -456,11 +631,23 @@ static void forward_block(int b) {
     // D_MODEL -> D_FF, apply ReLU, project back to D_MODEL. The ReLU is what
     // prevents the two matrix multiplies from collapsing into one
     // (linear * linear = linear, which would waste the extra weights).
+    //
+    // Pre-LN: if LN is enabled, normalize H1 before feeding it into W1. The
+    // residual below still wraps the ORIGINAL H1 (un-normalized).
     if (cfg.use_ffn) {
+        float (*ffn_in)[D_MODEL] = H1[b];
+        if (cfg.use_layernorm) {
+            for (int t = 0; t < T; ++t)
+                layernorm_forward_row(
+                    H1[b][t], ln2_out[b][t],
+                    gain2[b], bias2[b],
+                    ln2_xhat[b][t], &ln2_invstd[b][t]);
+            ffn_in = ln2_out[b];
+        }
         for (int t = 0; t < T; ++t)
             for (int j = 0; j < D_FF; ++j) {
                 float s = 0;
-                for (int i = 0; i < D_MODEL; ++i) s += H1[b][t][i] * W1[b][i][j];
+                for (int i = 0; i < D_MODEL; ++i) s += ffn_in[t][i] * W1[b][i][j];
                 ff_pre[b][t][j] = s;
                 ff_act[b][t][j] = s > 0 ? s : 0;
             }
@@ -469,7 +656,7 @@ static void forward_block(int b) {
                 float s = 0;
                 for (int j = 0; j < D_FF; ++j) s += ff_act[b][t][j] * W2[b][j][d];
                 ff_out[b][t][d] = s;
-                X_ot[t][d] = H1[b][t][d] + s;   // second residual
+                X_ot[t][d] = H1[b][t][d] + s;   // second residual (wraps H1, not ffn_in)
             }
     } else {
         for (int t = 0; t < T; ++t)
@@ -490,11 +677,22 @@ void forward(const int tokens[]) {
     for (int b = 0; b < cfg.num_blocks; ++b) forward_block(b);
 
     // Output projection + softmax to probability distribution over VOCAB.
+    // Pre-LN: one more LayerNorm right before Wout so the final vector feeds
+    // in at a predictable scale.
     auto& X_final = X_block[cfg.num_blocks];
+    float (*final_in)[D_MODEL] = X_final;
+    if (cfg.use_layernorm) {
+        for (int t = 0; t < T; ++t)
+            layernorm_forward_row(
+                X_final[t], ln_f_out[t],
+                gain_f, bias_f,
+                ln_f_xhat[t], &ln_f_invstd[t]);
+        final_in = ln_f_out;
+    }
     for (int t = 0; t < T; ++t)
         for (int v = 0; v < VOCAB; ++v) {
             float s = 0;
-            for (int d = 0; d < D_MODEL; ++d) s += X_final[t][d] * Wout[d][v];
+            for (int d = 0; d < D_MODEL; ++d) s += final_in[t][d] * Wout[d][v];
             logits[t][v] = s;
         }
     for (int t = 0; t < T; ++t) {
@@ -551,6 +749,12 @@ static void zero_param_grads() {
     std::fill_n(&g_W1  [0][0][0], MAX_BLOCKS * D_MODEL * D_FF,    0.0f);
     std::fill_n(&g_W2  [0][0][0], MAX_BLOCKS * D_FF    * D_MODEL, 0.0f);
     std::fill_n(&g_Wout[0][0],     D_MODEL * VOCAB,               0.0f);
+    std::fill_n(&g_gain1[0][0], MAX_BLOCKS * D_MODEL, 0.0f);
+    std::fill_n(&g_bias1[0][0], MAX_BLOCKS * D_MODEL, 0.0f);
+    std::fill_n(&g_gain2[0][0], MAX_BLOCKS * D_MODEL, 0.0f);
+    std::fill_n(&g_bias2[0][0], MAX_BLOCKS * D_MODEL, 0.0f);
+    std::fill_n(&g_gain_f[0], D_MODEL, 0.0f);
+    std::fill_n(&g_bias_f[0], D_MODEL, 0.0f);
 }
 
 static void backward_block(int b) {
@@ -559,9 +763,20 @@ static void backward_block(int b) {
     auto& dX_in  = g_X_block[b];
     auto& dX_out = g_X_block[b+1];
 
-    // FFN backward (if enabled): X_out = H1 + ff_out.
+    // FFN backward (if enabled): X_out = H1 + ff_out (residual); with LN on,
+    // ff_out was computed from ffn_in = LN2(H1), not from H1 directly.
+    //
+    // Strategy:
+    //   1. Direct residual path: dH1 starts as dX_out.
+    //   2. Backprop through W2, ReLU, W1 to get dffn_in (gradient at the
+    //      INPUT to the FFN — which is either H1 or LN2(H1)).
+    //   3. If LN on: route dffn_in through LN2 backward, add to dH1,
+    //      accumulate gain2/bias2 grads. Weight grad for W1 uses ln2_out.
+    //      If LN off: ffn_in IS H1, so just add dffn_in to dH1. W1 uses H1.
     float dH1[MAX_SEQ_LEN][D_MODEL];
     if (cfg.use_ffn) {
+        float (*ffn_in_forward)[D_MODEL] = cfg.use_layernorm ? ln2_out[b] : H1[b];
+
         for (int t = 0; t < T; ++t)
             for (int d = 0; d < D_MODEL; ++d) {
                 g_ff_out[b][t][d] = dX_out[t][d];
@@ -584,19 +799,35 @@ static void backward_block(int b) {
         for (int t = 0; t < T; ++t)
             for (int j = 0; j < D_FF; ++j)
                 g_ff_pre[b][t][j] = (ff_pre[b][t][j] > 0) ? g_ff_act[b][t][j] : 0.0f;
-        // ff_pre = H1 @ W1  =>  dH1 += dff_pre @ W1^T, dW1 += H1^T @ dff_pre
+        // ff_pre = ffn_in @ W1  =>  dffn_in = dff_pre @ W1^T, dW1 += ffn_in^T @ dff_pre
+        float dffn_in[MAX_SEQ_LEN][D_MODEL];
         for (int t = 0; t < T; ++t)
             for (int d = 0; d < D_MODEL; ++d) {
                 float s = 0;
                 for (int j = 0; j < D_FF; ++j) s += g_ff_pre[b][t][j] * W1[b][d][j];
-                dH1[t][d] += s;
+                dffn_in[t][d] = s;
             }
         for (int d = 0; d < D_MODEL; ++d)
             for (int j = 0; j < D_FF; ++j) {
                 float s = 0;
-                for (int t = 0; t < T; ++t) s += H1[b][t][d] * g_ff_pre[b][t][j];
+                for (int t = 0; t < T; ++t) s += ffn_in_forward[t][d] * g_ff_pre[b][t][j];
                 g_W1[b][d][j] += s;
             }
+        // Route dffn_in back into dH1. With LN on, this goes through LN2
+        // backward; without LN, it's the identity (just add).
+        if (cfg.use_layernorm) {
+            float dH1_via_ln[MAX_SEQ_LEN][D_MODEL];
+            for (int t = 0; t < T; ++t)
+                layernorm_backward_row(
+                    dffn_in[t], ln2_xhat[b][t], ln2_invstd[b][t],
+                    gain2[b], g_gain2[b], g_bias2[b],
+                    dH1_via_ln[t]);
+            for (int t = 0; t < T; ++t)
+                for (int d = 0; d < D_MODEL; ++d) dH1[t][d] += dH1_via_ln[t][d];
+        } else {
+            for (int t = 0; t < T; ++t)
+                for (int d = 0; d < D_MODEL; ++d) dH1[t][d] += dffn_in[t][d];
+        }
     } else {
         for (int t = 0; t < T; ++t)
             for (int d = 0; d < D_MODEL; ++d) dH1[t][d] = dX_out[t][d];
@@ -660,7 +891,14 @@ static void backward_block(int b) {
             g_K[b][u][d] = s;
         }
 
-    // Q, K, V = X_in @ (Wq, Wk, Wv). dX_in gets contributions from all three.
+    // Q, K, V = attn_in @ (Wq, Wk, Wv). With LN on, attn_in is ln1_out[b];
+    // with LN off, attn_in is X_in. Weight grads for Wq/Wk/Wv use attn_in;
+    // the gradient dattn_in then either (LN off) goes straight to dX_in, or
+    // (LN on) goes through LN1 backward to get an extra contribution to dX_in
+    // and accumulate gain1/bias1 grads.
+    float (*attn_in_forward)[D_MODEL] = cfg.use_layernorm ? ln1_out[b] : X_in;
+
+    float dattn_in[MAX_SEQ_LEN][D_MODEL];
     for (int t = 0; t < T; ++t)
         for (int d = 0; d < D_MODEL; ++d) {
             float s = 0;
@@ -669,20 +907,36 @@ static void backward_block(int b) {
                    + g_K[b][t][j] * Wk[b][d][j]
                    + g_V[b][t][j] * Wv[b][d][j];
             }
-            dX_in[t][d] += s;   // += because residual path already wrote it
+            dattn_in[t][d] = s;
         }
     for (int i = 0; i < D_MODEL; ++i)
         for (int j = 0; j < D_MODEL; ++j) {
             float sq = 0, sk = 0, sv = 0;
             for (int t = 0; t < T; ++t) {
-                sq += X_in[t][i] * g_Q[b][t][j];
-                sk += X_in[t][i] * g_K[b][t][j];
-                sv += X_in[t][i] * g_V[b][t][j];
+                sq += attn_in_forward[t][i] * g_Q[b][t][j];
+                sk += attn_in_forward[t][i] * g_K[b][t][j];
+                sv += attn_in_forward[t][i] * g_V[b][t][j];
             }
-            g_Wq[b][i][j] += sq;   // += for batch accumulation
+            g_Wq[b][i][j] += sq;
             g_Wk[b][i][j] += sk;
             g_Wv[b][i][j] += sv;
         }
+
+    // Route dattn_in back into dX_in (where dX_in already holds the residual
+    // contribution from dH1 via `dX_in[t][d] = dH1[t][d]` earlier).
+    if (cfg.use_layernorm) {
+        float dX_via_ln[MAX_SEQ_LEN][D_MODEL];
+        for (int t = 0; t < T; ++t)
+            layernorm_backward_row(
+                dattn_in[t], ln1_xhat[b][t], ln1_invstd[b][t],
+                gain1[b], g_gain1[b], g_bias1[b],
+                dX_via_ln[t]);
+        for (int t = 0; t < T; ++t)
+            for (int d = 0; d < D_MODEL; ++d) dX_in[t][d] += dX_via_ln[t][d];
+    } else {
+        for (int t = 0; t < T; ++t)
+            for (int d = 0; d < D_MODEL; ++d) dX_in[t][d] += dattn_in[t][d];
+    }
 }
 
 void backward(const int tokens[], const int target[]) {
@@ -698,21 +952,42 @@ void backward(const int tokens[], const int target[]) {
             g_logits[t][v] = (probs[t][v] - (v == target[t] ? 1.0f : 0.0f))
                              / (float)T * inv_batch;
 
-    // logits = X_final @ Wout  =>  dX_final = dlogits @ Wout^T, dWout += X_final^T @ dlogits
+    // logits = final_in @ Wout, where final_in is either X_final (LN off) or
+    // the final-LN output (LN on). Backward:
+    //   d(final_in) = dlogits @ Wout^T
+    //   dWout += final_in^T @ dlogits
+    // Then if LN is on, backprop d(final_in) through the final LN to get
+    // dX_final (and accumulate gain_f / bias_f gradients).
     auto& X_final  = X_block[cfg.num_blocks];
     auto& dX_final = g_X_block[cfg.num_blocks];
+
+    float (*final_in)[D_MODEL] = cfg.use_layernorm ? ln_f_out : X_final;
+
+    // dfinal is the gradient at the input to Wout — i.e., at ln_f_out or X_final.
+    float dfinal[MAX_SEQ_LEN][D_MODEL];
     for (int t = 0; t < T; ++t)
         for (int d = 0; d < D_MODEL; ++d) {
             float s = 0;
             for (int v = 0; v < VOCAB; ++v) s += g_logits[t][v] * Wout[d][v];
-            dX_final[t][d] = s;
+            dfinal[t][d] = s;
         }
     for (int d = 0; d < D_MODEL; ++d)
         for (int v = 0; v < VOCAB; ++v) {
             float s = 0;
-            for (int t = 0; t < T; ++t) s += X_final[t][d] * g_logits[t][v];
-            g_Wout[d][v] += s;      // += for batch accumulation
+            for (int t = 0; t < T; ++t) s += final_in[t][d] * g_logits[t][v];
+            g_Wout[d][v] += s;
         }
+
+    if (cfg.use_layernorm) {
+        for (int t = 0; t < T; ++t)
+            layernorm_backward_row(
+                dfinal[t], ln_f_xhat[t], ln_f_invstd[t],
+                gain_f, g_gain_f, g_bias_f,
+                dX_final[t]);
+    } else {
+        for (int t = 0; t < T; ++t)
+            for (int d = 0; d < D_MODEL; ++d) dX_final[t][d] = dfinal[t][d];
+    }
 
     // Walk blocks in REVERSE. Each block consumes g_X_block[b+1] and produces
     // g_X_block[b]. Weight grads inside backward_block use +=.
@@ -750,9 +1025,24 @@ void sgd_step() {
             for (int i = 0; i < D_MODEL; ++i) for (int j = 0; j < D_FF;    ++j) W1[b][i][j] -= LR_FFN * g_W1[b][i][j];
             for (int i = 0; i < D_FF;    ++i) for (int j = 0; j < D_MODEL; ++j) W2[b][i][j] -= LR_FFN * g_W2[b][i][j];
         }
+        if (cfg.use_layernorm) {
+            // LN params use the same LR as the sub-layer they precede.
+            for (int d = 0; d < D_MODEL; ++d) {
+                gain1[b][d] -= LR_ATTN * g_gain1[b][d];
+                bias1[b][d] -= LR_ATTN * g_bias1[b][d];
+                gain2[b][d] -= LR_FFN  * g_gain2[b][d];
+                bias2[b][d] -= LR_FFN  * g_bias2[b][d];
+            }
+        }
     }
 
     for (int d = 0; d < D_MODEL; ++d) for (int v = 0; v < VOCAB; ++v) Wout[d][v] -= LR_OUT * g_Wout[d][v];
+    if (cfg.use_layernorm) {
+        for (int d = 0; d < D_MODEL; ++d) {
+            gain_f[d] -= LR_OUT * g_gain_f[d];
+            bias_f[d] -= LR_OUT * g_bias_f[d];
+        }
+    }
 }
 
 // ============================================================================
@@ -1112,6 +1402,11 @@ static int param_count() {
           + cfg.seq_len * D_MODEL         // pos_emb (only rows actually used)
           + D_MODEL * VOCAB;              // Wout
     int per_block = 3 * D_MODEL * D_MODEL + (cfg.use_ffn ? 2 * D_MODEL * D_FF : 0);
+    if (cfg.use_layernorm) {
+        // 2 LNs per block (each = 2 * D_MODEL: gain + bias) + 1 final LN
+        per_block += 2 * (2 * D_MODEL);
+        p         += 2 * D_MODEL;
+    }
     return p + cfg.num_blocks * per_block;
 }
 
@@ -1123,9 +1418,10 @@ int main(int argc, char** argv) {
 
     std::printf("MinAI — ");
     if (!cfg.random) std::printf("fixed example, ");
-    std::printf("task=%s, seq_len=%d, batch=%d, blocks=%d, ffn=%s, causal=%s\n",
+    std::printf("task=%s, seq_len=%d, batch=%d, blocks=%d, ffn=%s, causal=%s, layernorm=%s\n",
                 task_name(cfg.task), cfg.seq_len, cfg.batch,
-                cfg.num_blocks, cfg.use_ffn ? "on" : "off", cfg.use_causal ? "on" : "off");
+                cfg.num_blocks, cfg.use_ffn ? "on" : "off",
+                cfg.use_causal ? "on" : "off", cfg.use_layernorm ? "on" : "off");
     std::printf("Parameters: %d    Training steps: %d\n\n", param_count(), cfg.num_steps);
 
     train();

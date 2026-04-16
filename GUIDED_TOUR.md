@@ -303,7 +303,7 @@ softmax(x + c) = softmax(x)   for any constant c
 
 Why? Because `exp(x_i + c) = exp(c) exp(x_i)`, and the `exp(c)` factor appears in both numerator and denominator and cancels. So we can subtract any constant from all inputs before computing softmax, with no change to the output. In practice: subtract the max input. Now the largest value is 0, `exp(0) = 1`, and nothing overflows.
 
-> **Read along:** `minai.cpp` Part 7, `softmax_inplace`. Three loops: find max, subtract and exponentiate, divide by sum. The subtract-max is in the second loop (`row[i] = exp(row[i] - max_val)`). This trick is not an optimization — it is correctness. Without it the program would produce `inf` on large logits.
+> **Read along:** `minai.cpp` Part 7, `softmax_inplace`. Three loops: find max, subtract and exponentiate, divide by sum. The subtract-max is in the second loop (`row[i] = exp(row[i] - max_val)`). This trick is not an optimization — it is correctness. Without it the program would produce `inf` on large inputs.
 
 And see **Part 15** for the bonus: the PDP-11 had no `exp()` function at all. The original program used a 256-entry lookup table indexed by `(max - x[i]) >> 5` to produce `exp(-k/8)` in fixed-point. This is the same trick modern hardware uses to quantize LLMs for edge deployment. Appendix A has more.
 
@@ -370,9 +370,63 @@ After the last block, every position still has a vector of dimension `D_MODEL = 
 logits = X_final @ Wout       # [T, D_MODEL] @ [D_MODEL, VOCAB] = [T, VOCAB]
 ```
 
-Then softmax over the `VOCAB` axis turns each row of logits into a probability distribution over the 10 digits. Argmax of that distribution is the predicted digit.
+The output of this multiplication is called a **logit** vector (one per position in the sequence). A logit is just a raw, un-normalized score — it can be any real number, positive or negative. The word comes from "log-odds" in classical statistics, but in modern neural-network usage it has drifted to mean simply *the number you feed into softmax*. If a logit is large and positive, the corresponding digit is strongly favored; large and negative, strongly disfavored; zero, neutral. You will see the word "logit" in every paper and every library's API; it is worth memorizing.
+
+Softmax over the `VOCAB` axis then turns each row of logits into a probability distribution over the 10 digits. Argmax of that distribution is the predicted digit.
 
 > **Read along:** `minai.cpp` Part 8, all of `forward_block` and `forward`. You now have the vocabulary to read every line of both functions.
+
+### LayerNorm: the piece that makes deep stacks trainable
+
+There is one more ingredient to a modern transformer block, and it is the only one that matters for training very deep networks: **layer normalization** (LayerNorm for short). It is optional in MinAI (`--layernorm=1`) but always on in real LLMs.
+
+**The problem it solves.** The residual connections from earlier in this chapter help a lot, but they are not enough once you stack tens of layers. The scale of the activation vectors at each layer tends to drift — either shrinking toward zero (vanishing gradients, nothing trains) or blowing up toward infinity (`NaN`, everything dies). In MinAI you can see this happen on your own machine. Run:
+
+```bash
+./minai --blocks=32 --layernorm=0 --steps=200
+```
+
+Within about 150 steps the loss becomes `NaN` and accuracy sticks at 1/8. The 32-layer model's gradients exploded. Now run:
+
+```bash
+./minai --blocks=32 --layernorm=1 --steps=200
+```
+
+Same architecture, same depth, same training data. LayerNorm added. Loss drops smoothly; accuracy hits 8/8. That is the lesson in a nutshell.
+
+**What LayerNorm does.** For each token's D_MODEL-wide vector, compute its mean and standard deviation *across its own components* (not across the batch, not across the sequence — just across the 16 numbers in that one vector). Subtract the mean and divide by the std so the vector has zero mean and unit variance. Then multiply and shift by two learned per-channel vectors, called **gain** and **bias**:
+
+```
+mean  = average of x[0..D-1]
+std   = std-dev of x[0..D-1]
+xhat  = (x - mean) / std              # normalized: zero mean, unit variance
+y     = xhat * gain + bias            # learned per-channel rescale/shift
+```
+
+The subtract-and-divide fixes the scale. The gain and bias give the model the freedom to un-do that normalization if it wants to — they start at 1 and 0 respectively, so LayerNorm is initially the identity, and training decides whether and how much to stray from it.
+
+**Where we put it.** There are two conventions. In the original 2017 paper, LayerNorm came *after* each sub-layer's output (the "Post-LN" style). Modern transformers (GPT-2, GPT-3, GPT-4) place it *before* each sub-layer's input (the "Pre-LN" style):
+
+```
+H1 = X  + Attn(LN(X))       # Pre-LN: LN before attention, residual wraps X
+H2 = H1 + FFN(LN(H1))       # Pre-LN: LN before FFN, residual wraps H1
+```
+
+MinAI uses Pre-LN — it is significantly more stable for deep networks. One more LayerNorm sits just before the final output projection so the logits come out at a predictable scale.
+
+**The parameter cost is trivial.** Two D_MODEL vectors per LN × 2 LNs per block + 1 final LN = 4 × D_MODEL + 2 × D_MODEL = 6 × D_MODEL per block ≈ 96 extra parameters per block in MinAI. Negligible.
+
+**Why it works** (the intuition, not the proof). Normalizing the inputs to each sub-layer keeps every sub-layer operating on vectors of similar magnitude throughout training. The gradients computed backward through each sub-layer therefore also stay at similar magnitudes. Vanishing and exploding gradients, both of which are caused by scale drift compounding across many layers, are prevented by design. The formal math is a short derivation you will meet in Chapter 9 if you want it.
+
+**The takeaway.** Once you add LayerNorm, the number of layers you can stack stops being limited by numerical stability and starts being limited by your patience and compute budget. GPT-3's 96 layers are only possible because every layer is sandwiched between LayerNorms keeping the scales tame. You can reproduce that exact depth in MinAI with:
+
+```bash
+./minai --blocks=96 --layernorm=1
+```
+
+It will run slowly because 96 blocks × 8 positions × a lot of small matrix multiplies, but it will actually train — same code path, same math, same mechanism as GPT-3. Ninety-six times.
+
+> **Read along:** `minai.cpp` Part 7b. Two functions, `layernorm_forward_row` and `layernorm_backward_row`, each about ten lines. The forward is the formula above. The backward is the derivative of the formula, derived exactly as Chapter 9 will teach you to derive things: chain rule applied one step at a time.
 
 ---
 
@@ -682,16 +736,16 @@ You now understand every mechanism in every transformer. The scale-up to a real 
 | `D_FF = 32` (2× `D_MODEL`) | `D_FF = 4 × D_MODEL` |
 | `VOCAB = 10` (digits) | `VOCAB ≈ 100,000` (subword pieces) |
 | `SEQ_LEN = 8` | `SEQ_LEN` in the hundreds of thousands |
-| no LayerNorm | LayerNorm before each sub-block for training stability |
-| optional causal mask | always-on causal mask (for generative models) |
+| optional LayerNorm (`--layernorm=1`) | always-on LayerNorm before each sub-block for training stability |
+| optional causal mask (`--causal=1`) | always-on causal mask (for generative models) |
 | one fixed training example | trillions of tokens of text |
 | ~2,240 parameters | ~1,000,000,000,000+ parameters |
 
 **Multi-head attention** is worth a paragraph. Instead of one set of `(Wq, Wk, Wv)` of full size `[D_MODEL × D_MODEL]`, you have `H` sets of `[D_MODEL × (D_MODEL/H)]`. Each head performs the Chapter-5 attention independently on its share of the dimensions. Then the `H` outputs are concatenated back into a `D_MODEL` vector. Why? Different heads learn to attend for different reasons — one head might focus on syntactic agreement, another on topical relevance. You get `H` distinct attention patterns instead of one.
 
-**LayerNorm** is a normalization applied to each token's vector before each sub-block: `LayerNorm(x) = (x - mean(x)) / std(x) * gain + bias`. It keeps activations from growing or shrinking as depth grows, which makes 100-layer stacks trainable.
+**LayerNorm** is a normalization applied to each token's vector before each sub-block: `LayerNorm(x) = (x - mean(x)) / std(x) * gain + bias`. It keeps activations from growing or shrinking as depth grows, which makes 100-layer stacks trainable. MinAI has this now (as of the `--layernorm=1` flag) — see the dedicated section at the end of Chapter 7 for the math and why it works, or just run `./minai --blocks=32 --layernorm=0` to watch gradients explode into `NaN` and then `./minai --blocks=32 --layernorm=1` to watch the same depth train happily.
 
-None of this changes the ideas in Chapters 1–10. Multi-head attention is attention, four times over, in parallel. LayerNorm is an extra normalization step you can derive the gradient of in five minutes. The depth is the same loop. The training is the same SGD. The loss is the same cross-entropy.
+None of this changes the ideas in Chapters 1–10. Multi-head attention is attention, four times over, in parallel. The depth is the same loop. The training is the same SGD. The loss is the same cross-entropy.
 
 If this is all one big program, then the difference between MinAI and GPT-4 is that GPT-4 is a *much bigger* one big program. The bitter lesson of the last decade is that, at least for language, "more of the same" scales shockingly well. Nobody predicted how far it would go.
 
@@ -791,6 +845,36 @@ Target[t] = (input[t] + input[t+1]) mod 10. Each output depends on only two adja
 
 **The lesson.** Different tasks stress different parts of the transformer. Attention = cross-position communication; FFN = per-position computation. A truly general model has both because different sub-problems need each.
 
+### Step 9 — Deep stacks explode without LayerNorm
+
+```bash
+./minai --blocks=32 --layernorm=0 --steps=200
+```
+
+Thirty-two layers, no normalization. Watch what happens — within about 150 steps the loss column prints `nan` and accuracy locks at 1/8. The 32-layer model's gradients have exploded to infinity and then past it. The model is dead. This is not a bug in MinAI; it is exactly what happens to any deep neural network without normalization. It is the wall that stopped transformers from going deep before LayerNorm (and its cousin BatchNorm) solved the problem.
+
+**The lesson.** Architecture has numerical constraints that compound with depth. "Just stack more layers" doesn't work by itself; you need machinery to keep the scales of activations and gradients under control across all those layers.
+
+### Step 10 — LayerNorm makes the same depth trainable
+
+```bash
+./minai --blocks=32 --layernorm=1 --steps=200
+```
+
+Exact same architecture, same depth, same training signal. Only change: LayerNorm added. Loss drops smoothly, accuracy hits 8/8 well before step 200. Same problem, entirely different outcome, because of one normalization step per sub-layer.
+
+**The lesson.** LayerNorm is the single most important piece of machinery separating 2017-era shallow transformers from the 100-layer models that followed. Once you have it, depth stops being limited by numerics and starts being limited by compute.
+
+### Step 11 — GPT-3 depth, in a single-file C++ toy
+
+```bash
+./minai --blocks=96 --layernorm=1 --steps=400
+```
+
+Ninety-six layers. The exact layer count of GPT-3. In ~820 lines of C++ on a laptop. It will run for a couple of minutes because 96 layers × 800 steps × a lot of small matrix multiplies, and it converges slowly because we still only have `D_MODEL=16` width to spread 96 layers across. But it *trains*. No crashes, no NaN, accuracy climbing. That is the skeleton of GPT-3, running in full, on your own machine.
+
+**The lesson.** This is the moment MinAI stops being a toy demo and starts being a true miniature of a real LLM. Every idea you read about in frontier-model papers — depth, residuals, pre-LN, batch training, attention, softmax, cross-entropy — is present here. The only difference is magnitude. Same dials, same physics.
+
 ### Putting it together
 
 By now you should have:
@@ -802,6 +886,9 @@ By now you should have:
 - Felt `O(N²)` attention slow down (Step 6).
 - Matched architecture capacity to task difficulty (Step 7).
 - Seen that FFN matters on some tasks and not others (Step 8).
+- Watched a deep network explode into NaN without normalization (Step 9).
+- Watched the same depth train cleanly with it (Step 10).
+- Actually trained a 96-layer transformer on your own machine (Step 11).
 
 That is not a metaphor for what it's like to train an LLM. That *is* what training an LLM is. The only thing GPT-4's researchers are doing differently is doing it with a million times more of everything — more parameters, more data, more compute — while fighting the same fundamental tradeoffs between capacity and overfitting, speed and batch size, context length and memory. Same dials, same curves, same lessons.
 

@@ -49,9 +49,10 @@ Read either document with `minai.cpp` open alongside. The comments in the source
 ## Flags at a glance
 
 ```
---blocks=N      stack N transformer layers (1..4, default 1)
+--blocks=N      stack N transformer layers (1..96, default 1 — 96 matches GPT-3 depth)
 --ffn=0|1       include the feed-forward sub-layer (default on)
 --causal=0|1    causal attention mask (default off)
+--layernorm=0|1 Pre-LN normalization before each sub-layer; makes deep stacks trainable
 --random=0|1    train on random sequences + measure held-out accuracy (default off)
 --seq_len=N     sequence length 1..32 (attention is O(N^2) in this)
 --batch=B       examples averaged per step 1..128 (default 1)

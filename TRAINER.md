@@ -21,9 +21,10 @@ The run prints training progress every 50 steps, then a demo showing the trained
 
 | Flag | Values | Default | What it does |
 |---|---|---|---|
-| `--blocks=N` | 1..4 | `1` | Stack N transformer layers. Each layer is attention + (optional) FFN. GPT-3 has 96. |
+| `--blocks=N` | 1..96 | `1` | Stack N transformer layers. Each layer is attention + (optional) FFN. `--blocks=96` matches GPT-3's layer count exactly. Stacks deeper than ~16 often fail to train without LayerNorm — a useful failure to witness. |
 | `--ffn=0\|1` | `0` or `1` | `1` | Include the feed-forward sub-layer inside each block. Off = pure attention. |
 | `--causal=0\|1` | `0` or `1` | `0` | Mask attention so position `t` can only see positions `≤ t`. This is what makes a transformer "generative". |
+| `--layernorm=0\|1` | `0` or `1` | `0` | Pre-LN normalization before each sub-layer (GPT-2+ style). The thing that makes deep stacks trainable — without it, `--blocks=32` produces `NaN`; with it, even `--blocks=96` trains. |
 | `--random=0\|1` | `0` or `1` | `0` | `0` = train on the single fixed example `[0..7]`. `1` = fresh random sequence every step, with a frozen held-out eval set so you can watch generalization. |
 | `--seq_len=N` | 1..32 | `8` | Sequence length. Attention cost is `O(N²)` in this, so doubling it ~4×'s the attention time per block. |
 | `--batch=B` | 1..128 | `1` | Examples per training step, averaged into one gradient update. Bigger batch = smoother loss curve, but each step is proportionally slower. |
@@ -56,6 +57,10 @@ Four target rules, all operating on an `N`-digit input:
 ./minai --seq_len=16                           # longer inputs (attention is O(N^2))
 ./minai --task=sort --random=1 --blocks=2      # harder task, needs more capacity
 ./minai --task=mod_sum                         # local task; FFN does the work
+./minai --blocks=32 --layernorm=0 --steps=200  # deep + no LN → NaN (gradients explode)
+./minai --blocks=32 --layernorm=1              # same depth + LN → trains smoothly
+./minai --blocks=8 --layernorm=1 --random=1 --batch=16  # 100% held-out on random reversal
+./minai --blocks=96 --layernorm=1 --steps=200  # GPT-3 depth, actually trains (slow)
 ```
 
 ### The loss curve plot
