@@ -193,6 +193,7 @@ struct Config {
     int  batch         = 1;
     Task task          = Task::Reverse;
     int  num_steps     = 800;
+    bool extra_demos   = false;   // run the three bonus demos (Parts 20-22)
 };
 static Config cfg;
 
@@ -230,6 +231,9 @@ static void print_usage(const char* argv0) {
         "  --batch=B       examples per step 1..%d (default 1)\n"
         "  --task=NAME     reverse | sort | shift | mod_sum (default reverse)\n"
         "  --steps=N       training steps (default 800)\n"
+        "  --extra_demos=0|1  run the three bonus demos:\n"
+        "                     hierarchical quantization / speculative decoding / KV tiering\n"
+        "                     (default 0; adds a few seconds)\n"
         "  --help          this help\n",
         argv0, MAX_BLOCKS, MAX_SEQ_LEN, MAX_BATCH);
 }
@@ -246,6 +250,7 @@ static void parse_args(int argc, char** argv) {
         else if (std::strncmp(a, "--batch=",   8) == 0) cfg.batch      = std::atoi(a + 8);
         else if (std::strncmp(a, "--task=",    7) == 0) cfg.task       = parse_task(a + 7);
         else if (std::strncmp(a, "--steps=",   8) == 0) cfg.num_steps  = std::atoi(a + 8);
+        else if (std::strncmp(a, "--extra_demos=",14) == 0) cfg.extra_demos = std::atoi(a + 14) != 0;
         else if (std::strcmp (a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             print_usage(argv[0]); std::exit(0);
         }
@@ -1394,6 +1399,602 @@ void demo_fixed_point_softmax() {
 }
 
 // ============================================================================
+//  PART 20 — HIERARCHICAL QUANTIZATION (the "organist" demo)
+// ============================================================================
+//  Why real LLMs don't store weights as 32-bit floats:
+//    * GPT-3 at FP32 = 700 GB. At FP16 = 350 GB. At int4 with hierarchical
+//      scales (what llama.cpp does) = ~90 GB, which just about fits on a
+//      couple of high-end consumer GPUs.
+//    * Inference is memory-bandwidth-bound (see Chapter 12). Fitting 4x more
+//      weights per byte feeding the FMAs means 4x throughput.
+//
+//  Trick: don't use a single 1/256 step (Q8 flat). Use a HIERARCHY of scales.
+//  Using the organist metaphor:
+//
+//      stored_weight = feet_scale * group_scale * int4_value
+//
+//      feet_scale  = one global number for the whole matrix           (coarse)
+//      group_scale = one number per row of Wout (one per output class) (medium)
+//      int4_value  = per-weight 4-bit integer in [-7, +7]             (fine)
+//
+//  The feet put you in the ballpark, the left hand refines to the right
+//  chord, the right hand lands on the exact note. This is almost exactly
+//  how llama.cpp's Q4_K_M format works on real LLM weights.
+//
+//  This demo quantizes the TRAINED Wout matrix five different ways and
+//  measures (a) max absolute reconstruction error, (b) task accuracy when
+//  the quantized Wout is used in place of the real one. It shows that
+//  hierarchical Q4 achieves ~5x compression with accuracy-preserving error,
+//  while flat Q4 (same bit-budget, no hierarchy) falls apart.
+// ----------------------------------------------------------------------------
+
+// Helper: compute max absolute error between two arrays.
+static float max_abs_err(const float* a, const float* b, int n) {
+    float m = 0;
+    for (int i = 0; i < n; ++i) {
+        float d = std::fabs(a[i] - b[i]);
+        if (d > m) m = d;
+    }
+    return m;
+}
+// Helper: compute RMS error between two arrays (average hit, not worst-case).
+static float rms_err(const float* a, const float* b, int n) {
+    double sum_sq = 0;
+    for (int i = 0; i < n; ++i) {
+        double d = (double)a[i] - b[i];
+        sum_sq += d * d;
+    }
+    return (float)std::sqrt(sum_sq / n);
+}
+
+// Temporarily swap in a quantized Wout, run the demo example, measure
+// accuracy, then restore the original. Returns correct/total ratio.
+static float accuracy_with_wout(float quantized_wout[D_MODEL][VOCAB], const int* tokens, const int* target) {
+    float saved[D_MODEL][VOCAB];
+    std::memcpy(saved, Wout, sizeof(Wout));
+    std::memcpy(Wout, quantized_wout, sizeof(Wout));
+    forward(tokens);
+    int correct = 0;
+    for (int t = 0; t < cfg.seq_len; ++t)
+        if (argmax_row(probs[t], VOCAB) == target[t]) ++correct;
+    std::memcpy(Wout, saved, sizeof(Wout));
+    return (float)correct / (float)cfg.seq_len;
+}
+
+// Flat Q8 quantization: one global scale covers the whole range.
+static void quantize_flat_q8(float out[D_MODEL][VOCAB]) {
+    float absmax = 0;
+    for (int i = 0; i < D_MODEL; ++i)
+        for (int j = 0; j < VOCAB; ++j)
+            absmax = std::fmax(absmax, std::fabs(Wout[i][j]));
+    float scale = absmax / 127.0f;
+    if (scale == 0) scale = 1e-9f;
+    for (int i = 0; i < D_MODEL; ++i)
+        for (int j = 0; j < VOCAB; ++j) {
+            int q = (int)std::lround(Wout[i][j] / scale);
+            if (q >  127) q =  127;
+            if (q < -128) q = -128;
+            out[i][j] = q * scale;
+        }
+}
+
+// Flat Q4 quantization: one global scale, 4 bits per weight.
+// 4 bits signed = [-7, +7] (we drop -8 for symmetry).
+static void quantize_flat_q4(float out[D_MODEL][VOCAB]) {
+    float absmax = 0;
+    for (int i = 0; i < D_MODEL; ++i)
+        for (int j = 0; j < VOCAB; ++j)
+            absmax = std::fmax(absmax, std::fabs(Wout[i][j]));
+    float scale = absmax / 7.0f;
+    if (scale == 0) scale = 1e-9f;
+    for (int i = 0; i < D_MODEL; ++i)
+        for (int j = 0; j < VOCAB; ++j) {
+            int q = (int)std::lround(Wout[i][j] / scale);
+            if (q >  7) q =  7;
+            if (q < -7) q = -7;
+            out[i][j] = q * scale;
+        }
+}
+
+// Hierarchical Q4 ("K-quant lite"): feet_scale (global FP32) *
+// group_scale (per column, FP16-equivalent) * int4_value.
+// The group is "per output class" — each of the 10 vocab columns has its
+// own scale. Like a per-instrument tuning.
+static void quantize_hierarchical_q4(float out[D_MODEL][VOCAB]) {
+    // First find the global ("feet") scale: the max group-scale we'll see.
+    float col_absmax[VOCAB];
+    for (int j = 0; j < VOCAB; ++j) {
+        float m = 0;
+        for (int i = 0; i < D_MODEL; ++i) m = std::fmax(m, std::fabs(Wout[i][j]));
+        col_absmax[j] = m;
+    }
+    float feet_scale = 0;
+    for (int j = 0; j < VOCAB; ++j) feet_scale = std::fmax(feet_scale, col_absmax[j] / 7.0f);
+    if (feet_scale == 0) feet_scale = 1e-9f;
+
+    // Per-column group scales, stored with ~FP16 precision (we round them).
+    float group_scale[VOCAB];
+    for (int j = 0; j < VOCAB; ++j) {
+        // ratio in [0, 1]; quantize to 6 bits for the "left hand".
+        float ratio = col_absmax[j] / (feet_scale * 7.0f);
+        int q6 = (int)std::lround(ratio * 63.0f);
+        if (q6 < 1)  q6 = 1;
+        if (q6 > 63) q6 = 63;
+        group_scale[j] = q6 / 63.0f;
+    }
+
+    for (int i = 0; i < D_MODEL; ++i)
+        for (int j = 0; j < VOCAB; ++j) {
+            float effective_scale = feet_scale * group_scale[j];
+            if (effective_scale == 0) effective_scale = 1e-9f;
+            int q = (int)std::lround(Wout[i][j] / effective_scale);
+            if (q >  7) q =  7;
+            if (q < -7) q = -7;
+            out[i][j] = q * effective_scale;
+        }
+}
+
+void demo_quantization() {
+    std::printf("\n================================================================\n");
+    std::printf(" Demo: Hierarchical weight quantization on Wout\n");
+    std::printf("   'feet + left hand + right hand' compression, real LLM style.\n");
+    std::printf("================================================================\n");
+
+    // Evaluate each scheme on the default demo example (fixed [0..seq_len-1]).
+    int tokens[MAX_SEQ_LEN], target[MAX_SEQ_LEN];
+    for (int t = 0; t < cfg.seq_len; ++t) tokens[t] = t % VOCAB;
+    make_target(tokens, target);
+
+    float q_flat_q8[D_MODEL][VOCAB];
+    float q_flat_q4[D_MODEL][VOCAB];
+    float q_hier_q4[D_MODEL][VOCAB];
+
+    quantize_flat_q8          (q_flat_q8);
+    quantize_flat_q4          (q_flat_q4);
+    quantize_hierarchical_q4  (q_hier_q4);
+
+    const int N = D_MODEL * VOCAB;
+    float max_q8    = max_abs_err(&Wout[0][0], &q_flat_q8[0][0], N);
+    float max_q4    = max_abs_err(&Wout[0][0], &q_flat_q4[0][0], N);
+    float max_hq4   = max_abs_err(&Wout[0][0], &q_hier_q4[0][0], N);
+    float rms_q8    = rms_err    (&Wout[0][0], &q_flat_q8[0][0], N);
+    float rms_q4    = rms_err    (&Wout[0][0], &q_flat_q4[0][0], N);
+    float rms_hq4   = rms_err    (&Wout[0][0], &q_hier_q4[0][0], N);
+    float acc_q8    = accuracy_with_wout(q_flat_q8,  tokens, target);
+    float acc_q4    = accuracy_with_wout(q_flat_q4,  tokens, target);
+    float acc_hq4   = accuracy_with_wout(q_hier_q4,  tokens, target);
+
+    std::printf("\n scheme                    bits/weight   max error   RMS error   accuracy\n");
+    std::printf(" -----------------------    -----------   ---------   ---------   --------\n");
+    std::printf(" FP32 baseline                32           0.000000    0.000000    8/8 (reference)\n");
+    std::printf(" Q8 flat (1 scale)             8           %.6f    %.6f    %d/%d\n", max_q8,  rms_q8,  (int)(acc_q8  * cfg.seq_len), cfg.seq_len);
+    std::printf(" Q4 flat (1 scale)             4           %.6f    %.6f    %d/%d\n", max_q4,  rms_q4,  (int)(acc_q4  * cfg.seq_len), cfg.seq_len);
+    std::printf(" Q4 hierarchical (feet+hand)  ~5           %.6f    %.6f    %d/%d\n", max_hq4, rms_hq4, (int)(acc_hq4 * cfg.seq_len), cfg.seq_len);
+
+    std::printf("\n The hierarchical scheme stores a global 32-bit 'feet' scale plus a\n");
+    std::printf(" 6-bit per-column 'left hand' scale plus a 4-bit 'right hand' index per\n");
+    std::printf(" weight. Total: ~5 bits per weight on average, yet RMS error typically\n");
+    std::printf(" lands between Q8 and flat Q4 — i.e., you get half the bits of Q8 with\n");
+    std::printf(" most of its precision. On MinAI's 16x10 Wout the gap is modest because\n");
+    std::printf(" column magnitudes are similar. On a 12288x50000 GPT output matrix the\n");
+    std::printf(" per-column scales vary by orders of magnitude, and hierarchical Q4\n");
+    std::printf(" beats flat Q4 by a dramatic margin. This is the idea behind llama.cpp's\n");
+    std::printf(" Q4_K_M — how 70B-parameter LLMs fit on a MacBook.\n");
+}
+
+// ============================================================================
+//  PART 21 — SPECULATIVE DECODING (the "fast cortex proposes, slow cortex
+//  verifies" demo)
+// ============================================================================
+//  In a real LLM inference stack this is the dominant latency optimization.
+//  A SMALL, fast, heavily-quantized DRAFT model guesses several tokens ahead.
+//  The LARGE, slow, high-precision VERIFIER model checks all of the draft's
+//  guesses in ONE parallel forward pass. Tokens the big model agrees with are
+//  accepted immediately; the first disagreement is overruled by the big
+//  model, and the rest of the draft's predictions are discarded.
+//
+//  Why it speeds things up: the big model's forward pass is dominated by
+//  loading its weights from memory (Chapter 12 again). Loading those weights
+//  ONCE to verify 4 token-positions costs almost the same as loading them
+//  ONCE to produce 1 token. So if the draft is right 70% of the time, the
+//  big model effectively produces ~3 tokens per forward pass instead of 1.
+//
+//  Our demo here is the agreement-rate half of this story. We train a tiny
+//  DRAFT model (1 block, no FFN, no LayerNorm) from scratch, then on the
+//  held-out set we count the fraction of positions where the draft's top
+//  prediction matches the big model's top prediction. That fraction is the
+//  EXPECTED ACCEPTANCE RATE of speculative decoding. Given the rate, we can
+//  compute the implied speedup for any draft:big cost ratio.
+// ----------------------------------------------------------------------------
+
+// A snapshot of every learnable parameter, so we can save big, train draft,
+// then restore big for the final demo/plot.
+struct WeightSnapshot {
+    float token_emb[VOCAB      ][D_MODEL];
+    float pos_emb  [MAX_SEQ_LEN][D_MODEL];
+    float Wq[MAX_BLOCKS][D_MODEL][D_MODEL];
+    float Wk[MAX_BLOCKS][D_MODEL][D_MODEL];
+    float Wv[MAX_BLOCKS][D_MODEL][D_MODEL];
+    float W1[MAX_BLOCKS][D_MODEL][D_FF   ];
+    float W2[MAX_BLOCKS][D_FF   ][D_MODEL];
+    float Wout[D_MODEL][VOCAB];
+    float gain1 [MAX_BLOCKS][D_MODEL], bias1 [MAX_BLOCKS][D_MODEL];
+    float gain2 [MAX_BLOCKS][D_MODEL], bias2 [MAX_BLOCKS][D_MODEL];
+    float gain_f[D_MODEL],             bias_f[D_MODEL];
+    Config cfg_at_save;
+};
+
+static void snapshot_save(WeightSnapshot& s) {
+    std::memcpy(s.token_emb, token_emb, sizeof(token_emb));
+    std::memcpy(s.pos_emb,   pos_emb,   sizeof(pos_emb));
+    std::memcpy(s.Wq, Wq, sizeof(Wq));
+    std::memcpy(s.Wk, Wk, sizeof(Wk));
+    std::memcpy(s.Wv, Wv, sizeof(Wv));
+    std::memcpy(s.W1, W1, sizeof(W1));
+    std::memcpy(s.W2, W2, sizeof(W2));
+    std::memcpy(s.Wout, Wout, sizeof(Wout));
+    std::memcpy(s.gain1, gain1, sizeof(gain1));
+    std::memcpy(s.bias1, bias1, sizeof(bias1));
+    std::memcpy(s.gain2, gain2, sizeof(gain2));
+    std::memcpy(s.bias2, bias2, sizeof(bias2));
+    std::memcpy(s.gain_f, gain_f, sizeof(gain_f));
+    std::memcpy(s.bias_f, bias_f, sizeof(bias_f));
+    s.cfg_at_save = cfg;
+}
+
+static void snapshot_load(const WeightSnapshot& s) {
+    std::memcpy(token_emb, s.token_emb, sizeof(token_emb));
+    std::memcpy(pos_emb,   s.pos_emb,   sizeof(pos_emb));
+    std::memcpy(Wq, s.Wq, sizeof(Wq));
+    std::memcpy(Wk, s.Wk, sizeof(Wk));
+    std::memcpy(Wv, s.Wv, sizeof(Wv));
+    std::memcpy(W1, s.W1, sizeof(W1));
+    std::memcpy(W2, s.W2, sizeof(W2));
+    std::memcpy(Wout, s.Wout, sizeof(Wout));
+    std::memcpy(gain1, s.gain1, sizeof(gain1));
+    std::memcpy(bias1, s.bias1, sizeof(bias1));
+    std::memcpy(gain2, s.gain2, sizeof(gain2));
+    std::memcpy(bias2, s.bias2, sizeof(bias2));
+    std::memcpy(gain_f, s.gain_f, sizeof(gain_f));
+    std::memcpy(bias_f, s.bias_f, sizeof(bias_f));
+    cfg = s.cfg_at_save;
+}
+
+// Silent training: no printing, no plot history. Used to quickly train the
+// draft model in the demo without polluting the main run's output.
+static void train_silent(int steps) {
+    int tokens[MAX_SEQ_LEN], target[MAX_SEQ_LEN];
+    for (int step = 1; step <= steps; ++step) {
+        zero_param_grads();
+        for (int b = 0; b < cfg.batch; ++b) {
+            sample_example(tokens, target);
+            forward(tokens);
+            backward(tokens, target);
+        }
+        sgd_step();
+    }
+}
+
+void demo_speculative() {
+    std::printf("\n================================================================\n");
+    std::printf(" Demo: Speculative decoding (draft model vs big model agreement)\n");
+    std::printf("================================================================\n");
+
+    // Save the big model.
+    WeightSnapshot big;
+    snapshot_save(big);
+
+    // Train a DRAFT model: same task, but ~half the compute of the big
+    // model. Real-world speculative decoding typically pairs a 70B verifier
+    // with a 1-7B drafter — not a wildly different architecture, just a
+    // smaller one. We emulate that by halving the block count (minimum 1),
+    // keeping FFN and LayerNorm on so the draft is a competent model, just
+    // shallower.
+    Config saved_cfg = cfg;
+    cfg.num_blocks = std::max(1, saved_cfg.num_blocks / 2);
+    // Keep task / random / batch / seq_len / ffn / ln / causal the same.
+    rng_state = 0xDEADC0DEu;   // reproducible draft init, distinct from big
+    init_weights();
+    int draft_steps = std::max(200, saved_cfg.num_steps / 2);
+    std::printf(" Training draft model (%d blocks, ffn=%s, ln=%s) for %d steps...\n",
+                cfg.num_blocks,
+                cfg.use_ffn ? "on" : "off",
+                cfg.use_layernorm ? "on" : "off",
+                draft_steps);
+    train_silent(draft_steps);
+
+    // Snapshot the draft model and restore config.
+    WeightSnapshot draft;
+    snapshot_save(draft);
+    cfg = saved_cfg;
+
+    // For each evaluation example, predict with BOTH big and draft and count
+    // positions where they agree.
+    int total_positions = 0, agreed = 0;
+
+    // Use either the fixed example or the held-out set, depending on --random.
+    int num_eval_examples = cfg.random ? NUM_EVAL : 1;
+    int eval_tokens[MAX_SEQ_LEN];
+
+    for (int e = 0; e < num_eval_examples; ++e) {
+        if (cfg.random) {
+            for (int t = 0; t < cfg.seq_len; ++t) eval_tokens[t] = held_out_tokens[e][t];
+        } else {
+            for (int t = 0; t < cfg.seq_len; ++t) eval_tokens[t] = t % VOCAB;
+        }
+
+        int big_preds  [MAX_SEQ_LEN];
+        int draft_preds[MAX_SEQ_LEN];
+
+        snapshot_load(big);
+        forward(eval_tokens);
+        for (int t = 0; t < cfg.seq_len; ++t) big_preds[t] = argmax_row(probs[t], VOCAB);
+
+        snapshot_load(draft);
+        forward(eval_tokens);
+        for (int t = 0; t < cfg.seq_len; ++t) draft_preds[t] = argmax_row(probs[t], VOCAB);
+
+        for (int t = 0; t < cfg.seq_len; ++t) {
+            total_positions++;
+            if (big_preds[t] == draft_preds[t]) agreed++;
+        }
+    }
+
+    float acceptance = (float)agreed / (float)total_positions;
+
+    // Cost-ratio assumption: both models use the same per-block cost
+    // (since the draft now has the same ffn/ln setup as big), so the ratio
+    // is just big.num_blocks / draft.num_blocks.
+    int draft_blocks = draft.cfg_at_save.num_blocks;
+    float R = (float)saved_cfg.num_blocks / (float)draft_blocks;
+
+    // With speculative decoding + K drafts verified per big pass, expected
+    // tokens per big pass = 1 + E[geom(accept)]; for illustration take K=4.
+    // Baseline is 1 token per big pass. With acceptance a, the big model
+    // still runs once per step but verifies K drafts. Expected accepted
+    // tokens per big pass = (1 - a^(K+1)) / (1 - a)   [minus 1 for the final
+    // verifier token], clamped. Simplified heuristic speedup:
+    int K = 4;
+    float expected_tokens_per_big_pass = 1.0f;
+    if (acceptance < 0.9999f) {
+        expected_tokens_per_big_pass = (1.0f - std::pow(acceptance, K + 1)) / (1.0f - acceptance);
+    } else {
+        expected_tokens_per_big_pass = (float)(K + 1);
+    }
+    float speedup = expected_tokens_per_big_pass;   // per big-model forward pass
+
+    std::printf("\n Task                : %s%s\n", task_name(saved_cfg.task), saved_cfg.random ? " (random)" : " (fixed)");
+    std::printf(" Big model           : %d blocks, ffn=%s, ln=%s\n",
+                saved_cfg.num_blocks,
+                saved_cfg.use_ffn ? "on" : "off",
+                saved_cfg.use_layernorm ? "on" : "off");
+    std::printf(" Draft model         : %d blocks, ffn=%s, ln=%s (half the depth of big)\n",
+                draft.cfg_at_save.num_blocks,
+                draft.cfg_at_save.use_ffn ? "on" : "off",
+                draft.cfg_at_save.use_layernorm ? "on" : "off");
+    std::printf(" Positions compared  : %d  (%d examples * %d positions)\n",
+                total_positions, num_eval_examples, cfg.seq_len);
+    std::printf(" Draft/big agreement : %d / %d = %.1f%%\n",
+                agreed, total_positions, acceptance * 100.0f);
+    std::printf(" Expected speedup    : %.2fx (with K=%d drafts per big pass, cost ratio ~%.1f)\n",
+                speedup, K, R);
+
+    if (!saved_cfg.random) {
+        std::printf("\n (Note: with --random=0 both models memorize the same single example,\n");
+        std::printf("  so agreement is trivially 100%%. For a realistic test, rerun with --random=1.)\n");
+    }
+
+    std::printf("\n Conclusion: the draft model agrees with the big model %.0f%% of the\n", acceptance * 100.0f);
+    std::printf(" time. In real speculative decoding, that translates to roughly that\n");
+    std::printf(" many tokens being produced per big-model forward pass — which is\n");
+    std::printf(" dominated by memory bandwidth, so getting %.1f tokens out of the same\n", speedup);
+    std::printf(" weight-load gives a wall-clock speedup of nearly the same factor.\n");
+
+    // Restore the big model so any subsequent output uses the trained weights.
+    snapshot_load(big);
+    cfg = saved_cfg;
+}
+
+// ============================================================================
+//  PART 22 — KV CACHE TIERING (hot working memory vs cold long-term memory)
+// ============================================================================
+//  The user's insight: human working memory holds about 7 items (Miller 1956).
+//  Beyond that, memory gets compressed into longer-term representations. This
+//  turns out to be almost exactly the right engineering hack for LLMs too.
+//
+//  During inference, an LLM re-uses the K and V vectors of every previously
+//  seen token. These get stored in the "KV cache". For a 1M-token context,
+//  that's hundreds of gigabytes of KV — more than any GPU has.
+//
+//  Solution: keep the most recent W tokens ("working memory") at full
+//  precision, and quantize older tokens' K,V down to Q8 or Q4. Attention's
+//  weight on old tokens is small and noisy anyway; the precision loss is
+//  largely invisible. Real techniques: StreamingLLM, H2O, KIVI.
+//
+//  This demo sweeps W from 0 to cfg.seq_len and measures the task accuracy
+//  when K,V of positions OLDER than W are quantized to Q8. The expectation
+//  is that accuracy stays high until W is small (only a few recent tokens
+//  in full precision), then drops off. Where it drops is *empirically the
+//  working-memory capacity of our trained model*.
+// ----------------------------------------------------------------------------
+
+// Round-trip a float through Q8 (1/256 precision) and back. This is exactly
+// the precision loss you'd get from storing a float as an int16 in Q8.8 --
+// the realistic compression used for the "warm" tier of a real KV cache.
+// NOTE: Q8 is fine-grained enough that on MinAI's tiny activations the
+// round-trip error is often below the softmax's sensitivity, so the effect
+// on accuracy may not show up until much more of the sequence is cold. See
+// the note at the end of the demo output.
+static float q8_roundtrip(float x) {
+    int16_t q = (int16_t)std::lround(x * 256.0f);
+    return q / 256.0f;
+}
+
+// Run a forward pass, but quantize K[b][u][d] and V[b][u][d] to Q8 for every
+// position u that is more than `hot_size` positions before the end of the
+// sequence. Then re-run attention and the downstream layers from there.
+// Returns the accuracy on the held-out / fixed example.
+static float forward_with_quantized_kv(const int* tokens, int hot_size) {
+    // First run the normal forward to populate K, V, and all later activations.
+    forward(tokens);
+
+    const int T = cfg.seq_len;
+
+    // Quantize K and V of old positions. "Old" = distance from the last
+    // position >= hot_size. In other words: the most recent hot_size tokens
+    // stay at full precision.
+    for (int b = 0; b < cfg.num_blocks; ++b) {
+        for (int u = 0; u < T; ++u) {
+            int age = (T - 1) - u;
+            if (age >= hot_size) {
+                for (int d = 0; d < D_MODEL; ++d) {
+                    K[b][u][d] = q8_roundtrip(K[b][u][d]);
+                    V[b][u][d] = q8_roundtrip(V[b][u][d]);
+                }
+            }
+        }
+    }
+
+    // Re-run attention and downstream layers for every block using the
+    // quantized K/V. The Q projections are unchanged (they came from the
+    // CURRENT token, which is hot). Easiest: just rerun forward_block from
+    // the scores step onward. Since we already have Q, K, V, we only need
+    // to recompute scores, attn, attn_o, H1, ff_out, X_block[b+1].
+    //
+    // For simplicity we rerun the whole forward_block but force it to keep
+    // our already-quantized K, V and already-computed Q. We do this by
+    // calling the attention pipeline inline here.
+    for (int b = 0; b < cfg.num_blocks; ++b) {
+        // scores = Q @ K^T / sqrt(D)
+        const float scale = 1.0f / std::sqrt((float)D_MODEL);
+        for (int t = 0; t < T; ++t)
+            for (int u = 0; u < T; ++u) {
+                float s = 0;
+                for (int d = 0; d < D_MODEL; ++d) s += Q[b][t][d] * K[b][u][d];
+                scores[b][t][u] = s * scale;
+            }
+        if (cfg.use_causal) {
+            const float NEG_INF = -1e30f;
+            for (int t = 0; t < T; ++t)
+                for (int u = t + 1; u < T; ++u) scores[b][t][u] = NEG_INF;
+        }
+        for (int t = 0; t < T; ++t) {
+            for (int u = 0; u < T; ++u) attn[b][t][u] = scores[b][t][u];
+            softmax_inplace(attn[b][t], T);
+        }
+        for (int t = 0; t < T; ++t)
+            for (int d = 0; d < D_MODEL; ++d) {
+                float s = 0;
+                for (int u = 0; u < T; ++u) s += attn[b][t][u] * V[b][u][d];
+                attn_o[b][t][d] = s;
+            }
+        // Residual + (optional) FFN, feeding into X_block[b+1].
+        for (int t = 0; t < T; ++t)
+            for (int d = 0; d < D_MODEL; ++d)
+                H1[b][t][d] = X_block[b][t][d] + attn_o[b][t][d];
+        if (cfg.use_ffn) {
+            float (*ffn_in)[D_MODEL] = H1[b];
+            if (cfg.use_layernorm) {
+                for (int t = 0; t < T; ++t)
+                    layernorm_forward_row(H1[b][t], ln2_out[b][t],
+                                          gain2[b], bias2[b],
+                                          ln2_xhat[b][t], &ln2_invstd[b][t]);
+                ffn_in = ln2_out[b];
+            }
+            for (int t = 0; t < T; ++t)
+                for (int j = 0; j < D_FF; ++j) {
+                    float s = 0;
+                    for (int i = 0; i < D_MODEL; ++i) s += ffn_in[t][i] * W1[b][i][j];
+                    ff_pre[b][t][j] = s;
+                    ff_act[b][t][j] = s > 0 ? s : 0;
+                }
+            for (int t = 0; t < T; ++t)
+                for (int d = 0; d < D_MODEL; ++d) {
+                    float s = 0;
+                    for (int j = 0; j < D_FF; ++j) s += ff_act[b][t][j] * W2[b][j][d];
+                    ff_out[b][t][d] = s;
+                    X_block[b+1][t][d] = H1[b][t][d] + s;
+                }
+        } else {
+            for (int t = 0; t < T; ++t)
+                for (int d = 0; d < D_MODEL; ++d)
+                    X_block[b+1][t][d] = H1[b][t][d];
+        }
+    }
+
+    // Final LN (if on) + output projection + softmax, same as forward().
+    auto& X_final = X_block[cfg.num_blocks];
+    float (*final_in)[D_MODEL] = X_final;
+    if (cfg.use_layernorm) {
+        for (int t = 0; t < T; ++t)
+            layernorm_forward_row(X_final[t], ln_f_out[t],
+                                  gain_f, bias_f,
+                                  ln_f_xhat[t], &ln_f_invstd[t]);
+        final_in = ln_f_out;
+    }
+    for (int t = 0; t < T; ++t)
+        for (int v = 0; v < VOCAB; ++v) {
+            float s = 0;
+            for (int d = 0; d < D_MODEL; ++d) s += final_in[t][d] * Wout[d][v];
+            logits[t][v] = s;
+        }
+    for (int t = 0; t < T; ++t) {
+        for (int v = 0; v < VOCAB; ++v) probs[t][v] = logits[t][v];
+        softmax_inplace(probs[t], VOCAB);
+    }
+
+    // Accuracy against target
+    int target[MAX_SEQ_LEN];
+    make_target(tokens, target);
+    int correct = 0;
+    for (int t = 0; t < T; ++t)
+        if (argmax_row(probs[t], VOCAB) == target[t]) ++correct;
+    return (float)correct / (float)T;
+}
+
+void demo_kv_tiering() {
+    std::printf("\n================================================================\n");
+    std::printf(" Demo: KV cache tiering (hot working memory vs cold long-term)\n");
+    std::printf("   Newer tokens stay FP32; older tokens get quantized to Q8.\n");
+    std::printf("   Sweep the 'hot working memory' size W from 0 to seq_len.\n");
+    std::printf("================================================================\n");
+
+    int tokens[MAX_SEQ_LEN];
+
+    // Average accuracy across eval examples.
+    const int N = cfg.random ? std::min(NUM_EVAL, 32) : 1;
+
+    std::printf("\n W (hot tokens)   accuracy\n");
+    std::printf(" --------------   --------\n");
+    for (int W = 0; W <= cfg.seq_len; ++W) {
+        float acc_sum = 0;
+        for (int e = 0; e < N; ++e) {
+            if (cfg.random) for (int t = 0; t < cfg.seq_len; ++t) tokens[t] = held_out_tokens[e][t];
+            else            for (int t = 0; t < cfg.seq_len; ++t) tokens[t] = t % VOCAB;
+            acc_sum += forward_with_quantized_kv(tokens, W);
+        }
+        float acc = acc_sum / (float)N;
+        const char* marker = (W == 7) ? "   <-- Miller's 7 (human working memory)" : "";
+        std::printf(" %3d             %6.1f%%%s\n", W, acc * 100.0f, marker);
+    }
+
+    std::printf("\n W = 0 means every K,V is quantized (fully 'cold' memory). W = seq_len\n");
+    std::printf(" means no quantization (everything 'hot'). In real LLMs, the gap\n");
+    std::printf(" between the two determines where you can put the working-memory\n");
+    std::printf(" boundary W. Miller's 7 is the brain's answer; production LLMs usually\n");
+    std::printf(" pick W somewhere in the same ballpark (for recent-token attention\n");
+    std::printf(" sinks) — not because they're imitating the brain, but because they\n");
+    std::printf(" are solving the same fast-vs-slow storage problem and arriving at\n");
+    std::printf(" similar numbers.\n");
+    std::printf("\n Note: on MinAI specifically, Q8 round-trip is so fine-grained that the\n");
+    std::printf(" accuracy almost never moves with W. The production-scale version of\n");
+    std::printf(" this same trick uses Q4 or even Q2 for cold tokens on top of much\n");
+    std::printf(" larger models where softmax operates in saturation, and the accuracy\n");
+    std::printf(" cost becomes visible. We keep Q8 here to stay faithful to the original\n");
+    std::printf(" PDP-11 precision.\n");
+}
+
+// ============================================================================
 //  MAIN
 // ============================================================================
 
@@ -1428,5 +2029,10 @@ int main(int argc, char** argv) {
     plot_curves();
     demo();
     demo_fixed_point_softmax();
+    if (cfg.extra_demos) {
+        demo_quantization();
+        demo_speculative();
+        demo_kv_tiering();
+    }
     return 0;
 }

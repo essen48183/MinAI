@@ -875,6 +875,28 @@ Ninety-six layers. The exact layer count of GPT-3. In ~820 lines of C++ on a lap
 
 **The lesson.** This is the moment MinAI stops being a toy demo and starts being a true miniature of a real LLM. Every idea you read about in frontier-model papers — depth, residuals, pre-LN, batch training, attention, softmax, cross-entropy — is present here. The only difference is magnitude. Same dials, same physics.
 
+### Step 12 — Hierarchical weight quantization (the "organist" trick)
+
+```bash
+./minai --random=1 --batch=16 --blocks=4 --layernorm=1 --extra_demos=1
+```
+
+After training finishes, the program runs three bonus demos. The first quantizes the trained `Wout` matrix three ways — Q8 flat, Q4 flat, Q4 with hierarchical scaling — and reports the precision cost of each. The hierarchical Q4 uses a "feet" (global) scale, a "left hand" (per-column) scale, and a "right hand" (per-weight 4-bit) index. This is the compression scheme behind llama.cpp's Q4_K_M format that lets Llama-2 70B run on a 64 GB laptop.
+
+**The lesson.** You don't have to store every weight at 32 bits. With a hierarchy of scales you can get down to ~5 effective bits per weight while keeping most of the precision. Bandwidth is the bottleneck (Chapter 12); fitting 4-6× more weights per byte loaded is 4-6× more tokens produced. This is how 2025-era open-weight LLMs reach consumer hardware.
+
+### Step 13 — Speculative decoding (fast cortex + slow cortex)
+
+Same command as Step 12. The second demo trains a smaller "draft" model (half the block count of the big one, everything else the same), then measures how often the draft and big model agree on the held-out set. The agreement rate is exactly the *expected acceptance rate* of speculative decoding — the mainstream inference optimization used by every frontier model (GPT-4, Claude, Gemini, llama.cpp, vLLM).
+
+**The lesson.** The big model's forward pass is dominated by loading its weights from memory, not by computing anything. Loading those weights once to verify `K=4` draft-proposed tokens costs almost the same as loading them once to produce `1` token. So if the draft is right 80% of the time, the big model effectively produces ~3 tokens per forward pass — a near-3× throughput win at zero quality cost because the big model has final say. It maps almost exactly onto the fast-subcortical vs slow-cortical split in biological brains.
+
+### Step 14 — KV cache tiering (Miller's 7 in silicon)
+
+Same command as Step 12. The third demo sweeps a "hot working memory" size `W` from 0 to `seq_len`, re-running the forward pass with `K`/`V` quantized to Q8 for every position older than `W`. It prints accuracy at each `W`, with Miller's 7 marked.
+
+**The lesson.** Human working memory holds about 7±2 items; older memories get compressed into longer-term storage that is slower but much larger. Production LLMs do *exactly* this with their KV cache: keep the most recent handful of tokens at full precision, progressively quantize older ones, evict the oldest. This is how 1M-token-context models become tractable — no GPU has a terabyte of HBM, so the cache has to be tiered. On MinAI specifically the Q8 round-trip is too fine-grained to move the accuracy needle, as the note at the end of the demo explains. It is also the only extension in this program that came *directly* from a human-brain observation: you already know the engineering answer because your skull is solving the same problem.
+
 ### Putting it together
 
 By now you should have:
@@ -889,6 +911,9 @@ By now you should have:
 - Watched a deep network explode into NaN without normalization (Step 9).
 - Watched the same depth train cleanly with it (Step 10).
 - Actually trained a 96-layer transformer on your own machine (Step 11).
+- Compressed a weight matrix with a three-level scale hierarchy (Step 12).
+- Measured the draft-model agreement rate that drives speculative decoding (Step 13).
+- Quantized old tokens and seen the biological-working-memory / LLM-KV-cache alignment (Step 14).
 
 That is not a metaphor for what it's like to train an LLM. That *is* what training an LLM is. The only thing GPT-4's researchers are doing differently is doing it with a million times more of everything — more parameters, more data, more compute — while fighting the same fundamental tradeoffs between capacity and overfitting, speed and batch size, context length and memory. Same dials, same curves, same lessons.
 

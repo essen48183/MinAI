@@ -58,6 +58,9 @@ Read either document with `minai.cpp` open alongside. The comments in the source
 --batch=B       examples averaged per step 1..128 (default 1)
 --task=NAME     reverse | sort | shift | mod_sum (default reverse)
 --steps=N       training iterations (default 800)
+--extra_demos=0|1  run three bonus demos after training (hierarchical weight quantization,
+                   speculative decoding, KV cache tiering). Each is a real LLM inference
+                   technique, shown in miniature. Adds a few seconds.
 ```
 
 Try `./minai --random=1 --blocks=2 --batch=16 --steps=2000` for a taste of how a real LLM trains in miniature.

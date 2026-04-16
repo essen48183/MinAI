@@ -30,7 +30,18 @@ The run prints training progress every 50 steps, then a demo showing the trained
 | `--batch=B` | 1..128 | `1` | Examples per training step, averaged into one gradient update. Bigger batch = smoother loss curve, but each step is proportionally slower. |
 | `--task=NAME` | `reverse` / `sort` / `shift` / `mod_sum` | `reverse` | Which target rule the model has to learn (see **Task zoo** below). |
 | `--steps=N` | ≥1 | `800` | Total training steps. |
+| `--extra_demos=0\|1` | `0` or `1` | `0` | After training, run three bonus inference-side demos: hierarchical weight quantization, speculative decoding, and KV cache tiering. Each is a real production LLM technique, shown in miniature. Adds a few seconds of runtime. |
 | `--help` / `-h` | — | — | Print usage and exit. |
+
+### The three bonus demos (`--extra_demos=1`)
+
+These run after training is done and give you a small-scale taste of three techniques real LLM inference stacks rely on:
+
+- **Hierarchical weight quantization** — takes the trained `Wout` matrix and stores it three ways: Q8 flat, Q4 flat, and Q4 with a per-column "feet + left hand + right hand" scale hierarchy. Prints max / RMS reconstruction error and whether the model still works with the quantized weights. The hierarchical Q4 at ~5 bits/weight ends up between Q8 and flat Q4 in precision — which is the trick behind llama.cpp's Q4_K_M format that lets a 70B model run on a MacBook.
+
+- **Speculative decoding** — trains a second smaller "draft" model (half the block count of the big one, with everything else on) and measures how often it agrees with the big model on the held-out set. The agreement rate is the expected acceptance rate in real speculative decoding, and translates directly to a throughput speedup (the big model verifies K draft tokens in one forward pass — most of its time is spent loading its own weights, so amortizing that over multiple accepted tokens is ~pure win).
+
+- **KV cache tiering** — sweeps a "hot working memory" size W from 0 to `seq_len` and re-runs the forward pass with K/V at every position older than W quantized to Q8. Reports the accuracy at each W, with Miller's 7 (the classic human working-memory capacity) called out. On MinAI specifically the effect is subtle because Q8 is so fine-grained; the note in the output explains what real LLMs do differently.
 
 The compile-time upper bounds `MAX_BLOCKS`, `MAX_SEQ_LEN`, `MAX_BATCH` live in Part 1 of `minai.cpp`. Bump and recompile if you want bigger runs.
 
