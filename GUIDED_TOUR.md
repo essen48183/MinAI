@@ -38,6 +38,8 @@ It prints a training log and a demo. That is the thing this book explains. Every
 - Chapters 8–10 describe **training**: the loss function, the calculus (finally), the weight-update loop.
 - Chapters 11–12 cross the bridge from math to hardware: how abstract calculus becomes matrix multiplication, and why GPUs and their memory have become the limiting resource of the entire AI industry right now.
 - Chapter 13 is the view from the top: here is what GPT-4 adds on top of what you just read.
+- Chapter 14 is a hands-on flag-by-flag walkthrough that lets you watch each concept fire on your own machine.
+- Chapter 15 covers the one big preprocessing step MinAI skips entirely: how real LLMs turn arbitrary text into the integer token IDs a transformer can consume (BPE, SentencePiece, pretrained encoders like DeBERTa, vector databases).
 - Appendix A is a side story about doing all of this in integer arithmetic on a 1970s minicomputer.
 - Appendix B is a set of exercises.
 
@@ -898,7 +900,7 @@ Switch the task to "sort the input ascending". This is harder than reversal: eac
 ### Step 8 — The local task
 
 ```bash
-./minai --task=mod_sum --random=1 --batch=16 --layernorm=1 --steps=3000
+./minai --task=mod_sum --random=1 --batch=16 --layernorm=1 --steps=5000
 ```
 
 Target[t] = (input[t] + input[t+1]) mod 10. Each output depends on only two adjacent inputs. Attention barely has to do anything — the FFN does most of the work. Accuracy should climb toward 100% within the 3000-step budget. Try it again with `--ffn=0` and watch it struggle — FFN is doing the arithmetic here.
@@ -978,6 +980,107 @@ By now you should have:
 That is not a metaphor for what it's like to train an LLM. That *is* what training an LLM is. The only thing GPT-4's researchers are doing differently is doing it with a million times more of everything — more parameters, more data, more compute — while fighting the same fundamental tradeoffs between capacity and overfitting, speed and batch size, context length and memory. Same dials, same curves, same lessons.
 
 The curtain is down.
+
+---
+
+## Chapter 15 — From digits to real text: tokenization and pretrained vectors
+
+MinAI has a trivial vocabulary: ten tokens, one per digit. The mapping from symbol to integer ID is obvious — the digit `3` is token `3`. That is the last free lunch we got. Real language offers no such convenience. This chapter covers the one big piece MinAI does not model, which is how a real language model takes the arbitrary text you type and turns it into a sequence of integer IDs that a transformer can accept. It is worth understanding because, unlike attention or backprop, tokenization is a *separate* engineering system from the model itself — a preprocessor sitting in front of the neural network — and it has real consequences for what the model can and cannot do.
+
+### The problem
+
+A transformer needs a finite alphabet of possible input symbols — the vocabulary, size `V` — because its token-embedding table has exactly `V` rows (one per symbol). MinAI has `V = 10` and the mapping is trivial. English text does not come with an obvious finite alphabet. What do you do?
+
+Three approaches exist, and each has a defining weakness.
+
+**Approach 1: one token per character.** `V` is small — about 128 if you stay ASCII, 50,000+ if you want full Unicode, a few million for every emoji ever minted. Every word becomes a sequence of character tokens: "cat" is `[99, 97, 116]`. It works but is wildly wasteful. A 10-word sentence is now a 60-character sequence, and the transformer's `O(N²)` attention is computing 3,600 score entries per layer for what ought to be a 10-token thought. Attention cost blows up faster than the vocabulary reduction saves.
+
+**Approach 2: one token per word.** The vocabulary is the dictionary — call it 50,000 words. Compact, fast, short sequences. But `run`, `runs`, `running`, `runner` are four unrelated token IDs to the model; their shared meaning has to be re-learned per token. Proper nouns, typos, and new words (`MinAI`) have no token at all, so you either add a catch-all `[UNK]` token — collapsing every unknown word into one bucket — or you give up on those words entirely. This is how pre-2017 NLP systems worked, and the ceiling was low.
+
+**Approach 3: subword tokens.** Tokens smaller than words but larger than characters. "tokenization" might be split into `["token", "ization"]`. "running" into `["run", "ning"]`. The model sees the shared prefix `run` and can generalize across related words. Rare or invented words degrade gracefully — every string decomposes into *some* sequence of known subwords, even if that sequence has to fall all the way down to single characters. This is the sweet spot, and it is what every LLM worth its memory uses.
+
+### Byte-Pair Encoding (BPE): the dominant subword algorithm
+
+BPE was invented in 1994 for file compression and repurposed for NLP in 2016 (Sennrich et al.). The training procedure is simple enough to describe in full:
+
+```
+Start with every character as its own token.
+Repeat K times:
+  Count the most frequent adjacent pair of tokens in the corpus.
+  Add that pair as a new single token to the vocabulary.
+  Replace every occurrence of the pair in the corpus with the new token.
+```
+
+Train this with, say, `K = 50,000` merges on a large English corpus and you get:
+
+- Very common words (`the`, `and`, `of`) become single tokens within the first few iterations.
+- Common suffixes (`ing`, `ed`, `ation`) become single tokens soon after.
+- Rare or technical words stay split into multiple tokens that usually decompose along morpheme boundaries.
+- Any unseen input is always expressible, because in the worst case BPE falls all the way back to characters.
+
+Concrete examples from GPT-style tokenizers:
+- `"running"` → `["run", "ning"]`
+- `"MinAI"` → `["Min", "AI"]` (the tokenizer never saw it during training but both pieces exist)
+- `"antidisestablishmentarianism"` → maybe `["anti", "dis", "establish", "ment", "arian", "ism"]`
+
+GPT-2/3/4 use BPE with about 50k–100k tokens. Llama uses a similar algorithm called SentencePiece, with about 32k tokens. Claude uses a proprietary variant. The parameters differ; the mechanism is the same. The chosen vocabulary size is a trade-off: bigger vocabulary means shorter sequences per sentence (faster inference) but a bigger embedding matrix (more memory, more parameters to train).
+
+### Once you have tokens, everything else is MinAI
+
+Here is the point worth pausing on: after the tokenizer runs, the transformer does not know or care where the integers came from. It just sees a sequence of IDs:
+
+```
+"The cat sat"  →  tokenizer  →  [464, 3797, 3332]
+```
+
+And those IDs go into a `token_emb` lookup table, exactly like MinAI's. In MinAI that table has 10 rows. In GPT-3 it has 50,257 rows × 12,288 columns = roughly 618 million parameters just for token embeddings. Same exact line of code. The table is bigger — and that is the entire difference.
+
+Position embeddings still add. Attention still runs. FFN still runs. Softmax at the output still runs over the vocabulary (now 50,000 possible next tokens instead of 10 possible next digits). Cross-entropy loss still compares probs to a one-hot target. Every mechanism you've learned applies, unchanged, at full scale.
+
+### Pretrained embeddings: don't train them from scratch if you don't have to
+
+Training good token embeddings requires seeing each token in many contexts, so the model can figure out what it "means". That is expensive. Worse, a fresh model starts with random embeddings, so its early training budget gets burned just bringing the embeddings to something sensible before the higher layers can do anything useful.
+
+The fix is **transfer learning**: take somebody else's already-trained embeddings and use them as your starting point. Two flavors exist.
+
+**Static embeddings.** Word2vec (2013), GloVe (2014), FastText (2016) — relatively shallow algorithms that produce a fixed ~300-dimensional vector per word. The same vector every time, regardless of context. Fast to look up, decent for word-similarity tasks, but blind to context: `bank` next to `river` and `bank` next to `deposit` get the identical vector.
+
+**Contextual embeddings.** BERT (2018), RoBERTa (2019), DeBERTa (2020) — transformer *encoders* that read a whole input and produce per-token vectors whose content depends on the surrounding tokens. Now `bank`-river and `bank`-deposit get genuinely different vectors. These are vastly more informative, and "pretrained vectors" in 2025 almost always means this kind.
+
+### DeBERTa as a concrete example
+
+DeBERTa ("Decoding-enhanced BERT with disentangled attention", He et al. 2020) is a transformer encoder: you feed it a BPE-tokenized string, it returns a 768-dimensional vector (base variant) or 1024-dimensional vector (large variant) for each input token. Internally, DeBERTa is built from *exactly* the mechanisms in this book: multi-head attention, residuals, LayerNorm, feed-forward blocks, cross-entropy loss. It was pretrained on billions of tokens of English with a self-supervised "guess the masked word" objective. The outcome is embeddings that carry remarkable semantic structure — words with similar meanings end up close in the vector space, synonyms cluster, and the surrounding context gets baked into every output.
+
+Typical downstream uses:
+
+- **Semantic search.** Encode a query and a billion documents with DeBERTa. Find documents whose embedding is closest to the query's. This is how "meaning-based" retrieval works, as distinct from keyword matching.
+- **Classification.** Feed DeBERTa's output through a small classifier head. Train only the head. You get state-of-the-art sentiment analysis or topic detection for almost free.
+- **Retrieval-augmented generation (RAG).** Instead of relying only on a language model's internal (parametric) memory, retrieve relevant documents with a DeBERTa-style encoder, paste them into the prompt, then let a generative model answer. Every "chat with your PDF" product does this.
+
+### The vector database connection
+
+Once you have a DeBERTa-style encoder, every piece of text in your corpus becomes a 768-dim vector. A billion pieces of text is a billion-row matrix. Searching that matrix for the nearest neighbor of a query vector is a whole subfield — **vector databases** (FAISS, Milvus, Pinecone, Weaviate). They use *exactly* the hierarchical quantization tricks from Part 20 of `minai.cpp`: product quantization, residual vector quantization, inverted-file indexes. The organist metaphor you already know from this project — feet get you to a region, left hand to the chord, right hand to the exact note — comes directly from here. Matching a query vector against stored embeddings is the application that most directly maps onto that metaphor.
+
+### What tokenization does *not* add conceptually
+
+It is easy to feel that tokenization is a huge new idea layered on top of the transformer. It is not. It is a *preprocessing step*. It turns arbitrary text into integer IDs. That is its only job. Every lesson in this book still applies to what the model does *after* that.
+
+What real LLMs add beyond MinAI because of tokenization:
+
+- **A bigger `token_emb` table.** 100,000 × 12,288 floats instead of 10 × 16. Together with the output projection `Wout`, the embedding and un-embedding weights account for a very large fraction of total LLM parameters (roughly a quarter of GPT-3, less in bigger models where the middle dominates).
+- **A bigger `Wout` table** with the same shape flipped, since it predicts which token comes next.
+- **Sometimes tied weights.** Because `token_emb` and `Wout` have reciprocally matching shapes (`V × D` and `D × V`), many real LLMs use the same matrix for both, saving hundreds of millions of parameters. This is a parameter-sharing trick, not a new idea.
+- **A tokenizer dependency.** A separate file (typically `tokenizer.json`) defining the BPE merges and a runtime that applies them before any of your code sees the text. Swap tokenizers and your model breaks — the integer IDs no longer mean what the embedding table was trained to expect.
+
+Everything else is identical to MinAI. Same attention, same residuals, same backprop, same cross-entropy loss. The entire book you just read describes every operation a GPT-4 inference does, once the token IDs are in hand.
+
+### Summary
+
+Tokenization is the reason a 175-billion-parameter language model can accept any question at all in any language. It turns the open-ended problem "accept English text as input" into the bounded problem "accept a sequence of integers from a fixed 50–100k alphabet." Once you have the integers, the transformer described in Chapters 1–13 of this book is what processes them — the very same mechanism, enlarged.
+
+Pretrained contextual encoders like DeBERTa are *themselves* transformers applied to tokenized text. Their output vectors are then reusable as features for downstream tasks, including being stored in vector databases for semantic search. In that sense, tokenization + pretrained encoders form a software stack on top of which most practical NLP is built. MinAI skips that stack — its vocabulary is ten digits and its embedding table is learned from scratch — but every real-world LLM sits on top of it.
+
+If you understood MinAI, you understand the model inside DeBERTa, inside GPT-4, inside the open-weight Llama that runs on your laptop. The tokenizer is the one piece of machinery you have to pick up separately.
 
 ---
 
