@@ -1,0 +1,11 @@
+# Compiled binary
+minai
+
+# md2pdf temp file
+.md2pdf_tmp.html
+
+# macOS
+.DS_Store
+
+# Object files
+*.o
