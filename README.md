@@ -63,7 +63,7 @@ Read either document with `minai.cpp` open alongside. The comments in the source
                    technique, shown in miniature. Adds a few seconds.
 ```
 
-Try `./minai --random=1 --blocks=2 --batch=16 --steps=2000` for a taste of how a real LLM trains in miniature.
+Try `./minai --random=1 --blocks=2 --batch=16 --layernorm=1 --steps=3000` for a taste of how a real LLM trains in miniature — the model has to generalize, not memorize, and with LN + batch the grokking moment should land well before 3000 steps.
 
 ## Repo layout
 

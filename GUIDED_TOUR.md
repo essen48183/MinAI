@@ -389,10 +389,10 @@ There is one more ingredient to a modern transformer block, and it is the only o
 Within about 150 steps the loss becomes `NaN` and accuracy sticks at 1/8. The 32-layer model's gradients exploded. Now run:
 
 ```bash
-./minai --blocks=32 --layernorm=1 --steps=200
+./minai --blocks=32 --layernorm=1 --steps=1000
 ```
 
-Same architecture, same depth, same training data. LayerNorm added. Loss drops smoothly; accuracy hits 8/8. That is the lesson in a nutshell.
+Same architecture, same depth, same training data. LayerNorm added. Loss drops smoothly; accuracy hits 8/8 well before 1000 steps. That is the lesson in a nutshell.
 
 **What LayerNorm does.** For each token's D_MODEL-wide vector, compute its mean and standard deviation *across its own components* (not across the batch, not across the sequence — just across the 16 numbers in that one vector). Subtract the mean and divide by the std so the vector has zero mean and unit variance. Then multiply and shift by two learned per-channel vectors, called **gain** and **bias**:
 
@@ -421,10 +421,10 @@ MinAI uses Pre-LN — it is significantly more stable for deep networks. One mor
 **The takeaway.** Once you add LayerNorm, the number of layers you can stack stops being limited by numerical stability and starts being limited by your patience and compute budget. GPT-3's 96 layers are only possible because every layer is sandwiched between LayerNorms keeping the scales tame. You can reproduce that exact depth in MinAI with:
 
 ```bash
-./minai --blocks=96 --layernorm=1
+./minai --blocks=96 --layernorm=1 --steps=2000
 ```
 
-It will run slowly because 96 blocks × 8 positions × a lot of small matrix multiplies, but it will actually train — same code path, same math, same mechanism as GPT-3. Ninety-six times.
+It will run slowly because 96 blocks × 8 positions × a lot of small matrix multiplies, but it will actually train — same code path, same math, same mechanism as GPT-3. Ninety-six times. On the fixed-input task 2000 steps is plenty to hit 8/8 and plateau.
 
 > **Read along:** `minai.cpp` Part 7b. Two functions, `layernorm_forward_row` and `layernorm_backward_row`, each about ten lines. The forward is the formula above. The backward is the derivative of the formula, derived exactly as Chapter 9 will teach you to derive things: chain rule applied one step at a time.
 
@@ -788,10 +788,10 @@ Stack two transformer layers. Parameters double (4,032 from 2,240). Final loss s
 ### Step 3 — Force generalization with random inputs
 
 ```bash
-./minai --random=1 --steps=2000
+./minai --random=1 --steps=5000
 ```
 
-Now the model sees a fresh random 8-digit sequence every training step. It cannot memorize; it must learn the *rule*. The training log gains a held-out accuracy column — performance on 64 sequences the model has never seen. Watch it climb from 10% (random baseline) toward 20–30% over 2000 steps.
+Now the model sees a fresh random 8-digit sequence every training step. It cannot memorize; it must learn the *rule*. The training log gains a held-out accuracy column — performance on 64 sequences the model has never seen. Watch the train-accuracy column jitter wildly (0% / 12.5% / 25% / 0% / ...) — that is the single-example noise in action. Held-out accuracy crawls upward, maybe to 15-25% by step 5000. The model is struggling, and with batch size 1 it may not grok at all within patience. Step 5 will show why bigger batches change this.
 
 **The lesson.** This is the moment the word "generalization" becomes concrete. Memorizing is easy; learning a rule is hard. Real LLMs are trained almost entirely in this regime — every example seen once, with held-out data measuring whether the model is actually *learning* vs *storing*. The gap between train accuracy (which jitters wildly from step to step) and held-out accuracy (which rises smoothly) is the heartbeat of machine learning.
 
@@ -865,20 +865,20 @@ When a model's accuracy plateaus, there are two very different possibilities:
 
 Distinguishing these two cases is one of the core skills of a machine-learning engineer. Here — because we know exactly how the data is generated — we can *prove* this is case (b). The model learned every bit there was to learn; the remainder is not there to be learned. That proof comes out of the table above plus the independence property of the data. It is the same style of argument Claude Shannon formalized in 1948 for information theory, and it still runs every decision in the field.
 
-### Step 5 — Batch training smooths the curve
+### Step 5 — Batch training smooths the curve AND unlocks grokking
 
 ```bash
-./minai --random=1 --batch=16 --steps=2000
+./minai --random=1 --batch=16 --steps=15000
 ```
 
-Each training step now averages gradients over 16 random sequences instead of one. Compare the loss sparkline to Step 3's: this one is visibly smoother. The single-example noise has been averaged away.
+Each training step now averages gradients over 16 random sequences instead of one. Compare the loss sparkline to Step 3's: this one is visibly smoother, and critically the model now has enough clean signal to actually learn the rule. Expect held-out accuracy to stay ~10% for several thousand steps, then **grok** — a sudden breakthrough where held-out accuracy climbs from ~20% to ~100% over a window of 2–3 thousand steps. The exact step count of the breakthrough varies with the RNG seed, but it almost always happens well before step 15000.
 
 **The lesson.** Every real LLM trains with large batches — GPT-3 used batches of millions of tokens per step. The effect is exactly what you see here: the gradient direction is less noisy, so the optimizer can take more confident steps. This is also why GPUs are useful: a batched matrix multiply of 16 sequences fills a GPU's parallel arithmetic units much better than one sequence does (see Chapter 12).
 
 ### Step 6 — Sequence length = quadratic attention cost
 
 ```bash
-./minai --seq_len=16 --steps=400
+./minai --seq_len=16 --steps=2000
 ```
 
 Double the sequence length from 8 to 16. Watch the per-step log; it will run visibly slower. Attention's score matrix is now 16×16 = 256 entries per block instead of 8×8 = 64. That `O(N²)` scaling is the reason long-context LLMs are expensive.
@@ -888,20 +888,20 @@ Double the sequence length from 8 to 16. Watch the per-step log; it will run vis
 ### Step 7 — A harder task needs more capacity
 
 ```bash
-./minai --task=sort --blocks=2 --random=1 --batch=16 --steps=2000
+./minai --task=sort --blocks=2 --random=1 --batch=16 --layernorm=1 --steps=10000
 ```
 
-Switch the task to "sort the input ascending". This is harder than reversal: each output position needs to know the *entire* input to decide its rank. Run it with two blocks and batch 16 and see what happens.
+Switch the task to "sort the input ascending". This is harder than reversal: each output position needs to know the *entire* input to decide its rank. Run it with two blocks, batch 16, and LayerNorm on for stability, and give it 10k steps so grokking has time to land. Watch held-out accuracy climb substantially above 10% even though sort is much harder than reverse.
 
 **The lesson.** Architecture has to match task difficulty. Try `--task=sort --blocks=1 --ffn=0` — you'll likely see it fail to learn at all, because "half a layer" doesn't have the computational depth to do sorting. Bigger models aren't always better on easy tasks (too much capacity overfits), but they become *necessary* on hard ones. This is the scaling law in miniature.
 
 ### Step 8 — The local task
 
 ```bash
-./minai --task=mod_sum --random=1 --batch=8
+./minai --task=mod_sum --random=1 --batch=16 --layernorm=1 --steps=3000
 ```
 
-Target[t] = (input[t] + input[t+1]) mod 10. Each output depends on only two adjacent inputs. Attention barely has to do anything — the FFN does most of the work. Try it again with `--ffn=0` and watch it struggle.
+Target[t] = (input[t] + input[t+1]) mod 10. Each output depends on only two adjacent inputs. Attention barely has to do anything — the FFN does most of the work. Accuracy should climb toward 100% within the 3000-step budget. Try it again with `--ffn=0` and watch it struggle — FFN is doing the arithmetic here.
 
 **The lesson.** Different tasks stress different parts of the transformer. Attention = cross-position communication; FFN = per-position computation. A truly general model has both because different sub-problems need each.
 
@@ -918,27 +918,27 @@ Thirty-two layers, no normalization. Watch what happens — within about 150 ste
 ### Step 10 — LayerNorm makes the same depth trainable
 
 ```bash
-./minai --blocks=32 --layernorm=1 --steps=200
+./minai --blocks=32 --layernorm=1 --steps=1000
 ```
 
-Exact same architecture, same depth, same training signal. Only change: LayerNorm added. Loss drops smoothly, accuracy hits 8/8 well before step 200. Same problem, entirely different outcome, because of one normalization step per sub-layer.
+Exact same architecture, same depth, same training signal. Only change: LayerNorm added. Loss drops smoothly, accuracy hits 8/8 long before step 1000 and then just keeps driving the loss down. Same problem, entirely different outcome, because of one normalization step per sub-layer.
 
 **The lesson.** LayerNorm is the single most important piece of machinery separating 2017-era shallow transformers from the 100-layer models that followed. Once you have it, depth stops being limited by numerics and starts being limited by compute.
 
 ### Step 11 — GPT-3 depth, in a single-file C++ toy
 
 ```bash
-./minai --blocks=96 --layernorm=1 --steps=400
+./minai --blocks=96 --layernorm=1 --steps=2000
 ```
 
-Ninety-six layers. The exact layer count of GPT-3. In ~820 lines of C++ on a laptop. It will run for a couple of minutes because 96 layers × 800 steps × a lot of small matrix multiplies, and it converges slowly because we still only have `D_MODEL=16` width to spread 96 layers across. But it *trains*. No crashes, no NaN, accuracy climbing. That is the skeleton of GPT-3, running in full, on your own machine.
+Ninety-six layers. The exact layer count of GPT-3. In ~820 lines of C++ on a laptop. It will run for a few minutes because 96 layers × 2000 steps × many small matrix multiplies, and it converges slowly because we still only have `D_MODEL=16` width to spread 96 layers across. But it *trains*. No crashes, no NaN, loss falling steadily, accuracy heading to 8/8. That is the skeleton of GPT-3, running in full, on your own machine.
 
 **The lesson.** This is the moment MinAI stops being a toy demo and starts being a true miniature of a real LLM. Every idea you read about in frontier-model papers — depth, residuals, pre-LN, batch training, attention, softmax, cross-entropy — is present here. The only difference is magnitude. Same dials, same physics.
 
 ### Step 12 — Hierarchical weight quantization (the "organist" trick)
 
 ```bash
-./minai --random=1 --batch=16 --blocks=4 --layernorm=1 --extra_demos=1
+./minai --random=1 --batch=16 --blocks=4 --layernorm=1 --steps=3000 --extra_demos=1
 ```
 
 After training finishes, the program runs three bonus demos. The first quantizes the trained `Wout` matrix three ways — Q8 flat, Q4 flat, Q4 with hierarchical scaling — and reports the precision cost of each. The hierarchical Q4 uses a "feet" (global) scale, a "left hand" (per-column) scale, and a "right hand" (per-weight 4-bit) index. This is the compression scheme behind llama.cpp's Q4_K_M format that lets Llama-2 70B run on a 64 GB laptop.

@@ -58,20 +58,30 @@ Four target rules, all operating on an `N`-digit input:
 
 ### Example runs
 
+Each command below is tuned to have enough `--steps` for the reader to see the training either converge to its ceiling or clearly plateau stuck. Commands that use `--random=1` generally need thousands to tens of thousands of steps to grok on this tiny model; commands on fixed data converge quickly.
+
 ```bash
-./minai                                        # defaults: 1 block, FFN on, fixed [0..7]
-./minai --blocks=1 --ffn=0                     # classic 1,216-param MinAI
-./minai --blocks=2                             # stack two full layers
-./minai --random=1                             # random sequences + held-out accuracy
-./minai --random=1 --causal=1                  # watch causal masking actually hurt
-./minai --random=1 --blocks=2 --batch=16       # real-world-ish training setup
-./minai --seq_len=16                           # longer inputs (attention is O(N^2))
-./minai --task=sort --random=1 --blocks=2      # harder task, needs more capacity
-./minai --task=mod_sum                         # local task; FFN does the work
-./minai --blocks=32 --layernorm=0 --steps=200  # deep + no LN → NaN (gradients explode)
-./minai --blocks=32 --layernorm=1              # same depth + LN → trains smoothly
-./minai --blocks=8 --layernorm=1 --random=1 --batch=16  # 100% held-out on random reversal
-./minai --blocks=96 --layernorm=1 --steps=200  # GPT-3 depth, actually trains (slow)
+# ---- FIXED-DATA baselines (memorize one example) — converge in <1000 steps ----
+./minai                                                              # defaults: 1 block, FFN on, reverse, 800 steps -> 8/8
+./minai --blocks=1 --ffn=0                                           # classic 1,216-param MinAI
+./minai --blocks=2                                                   # stack two full layers
+./minai --seq_len=16 --steps=2000                                    # longer fixed input, still memorizable
+
+# ---- RANDOM-DATA training (real generalization, needs patience) -----------------
+./minai --random=1 --batch=16 --layernorm=1 --steps=3000             # fastest path to 100% held-out: LN + batch
+./minai --random=1 --batch=16 --steps=20000                          # same task, no LN — watch it grok around step 10-15k
+./minai --task=sort --random=1 --batch=16 --layernorm=1 --steps=10000       # harder task, needs more capacity
+./minai --task=mod_sum --random=1 --batch=16 --layernorm=1 --steps=3000     # local task; FFN does the work
+
+# ---- ARCHITECTURAL EDGE CASES ---------------------------------------------------
+./minai --random=1 --causal=1 --steps=200000                         # causal mask plateaus at exactly 55% (see Chapter 14 Step 4 in GUIDED_TOUR for why)
+./minai --blocks=32 --layernorm=0 --steps=200                        # deep + no LN → NaN in ~150 steps (gradients explode)
+./minai --blocks=32 --layernorm=1 --steps=1000                       # same depth + LN → trains smoothly to 8/8 on fixed
+./minai --blocks=8 --layernorm=1 --random=1 --batch=16 --steps=2000  # mid-depth + LN → 100% on random reverse
+./minai --blocks=96 --layernorm=1 --random=1 --batch=16 --steps=5000 # GPT-3 depth; slow but trains
+
+# ---- BONUS DEMOS (hierarchical quant, speculative decoding, KV tiering) --------
+./minai --random=1 --batch=16 --blocks=4 --layernorm=1 --steps=3000 --extra_demos=1
 ```
 
 ### The loss curve plot
