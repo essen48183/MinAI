@@ -1186,12 +1186,28 @@ static std::vector<float> loss_history;     // one entry per training step
 static std::vector<int>   eval_step_index;  // steps at which we measured eval
 static std::vector<float> eval_heldout_acc; // corresponding held-out accuracy
 
+// Logarithmic-ish reporting cadence. Dense early so you can watch the
+// first descent step by step, thinning out as the loss stabilizes and
+// step-by-step detail stops being informative.
+//
+//   steps 1..25       -> every step           (25 lines)
+//   steps 26..50      -> every 5              (5 lines)
+//   steps 51..200     -> every 25             (6 lines)
+//   steps 201..1000   -> every 100            (8 lines)
+//   steps 1001..10k   -> every 500            (18 lines)
+//   steps 10k..50k    -> every 1000           (40 lines)
+//   steps 50k+        -> every 5000           (N/5000 lines)
+//
+// Plus step 1 and the final step always.
 static bool should_report(int step, int total) {
     if (step == 1 || step == total) return true;
-    if (step <= 20)   return true;
-    if (step <= 50)   return (step % 5) == 0;
-    if (step <= 200)  return (step % 10) == 0;
-    return (step % 50) == 0;
+    if (step <= 25)    return true;
+    if (step <= 50)    return (step % 5)    == 0;
+    if (step <= 200)   return (step % 25)   == 0;
+    if (step <= 1000)  return (step % 100)  == 0;
+    if (step <= 10000) return (step % 500)  == 0;
+    if (step <= 50000) return (step % 1000) == 0;
+    return (step % 5000) == 0;
 }
 
 void train() {
