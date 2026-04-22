@@ -1,0 +1,67 @@
+MinAI — descriptions for marketing and catalog use
+==================================================
+
+
+----- BACK COVER (≈195 words) -----
+
+By the end of this book you will have watched a small C++ program grow
+from 540 lines that reverse a list of digits into a few thousand lines
+that accept a prompt, tokenize it, sample tokens, and generate text — a
+simplified GPT you can run on a laptop. Every mechanism in that program
+is a mechanism inside ChatGPT, Claude, and every frontier-scale language
+model. The only difference is quantity.
+
+MinAI is a three-section walk through that mechanism. Section 1 (fifteen
+short chapters) introduces the smallest possible complete transformer
+and explains each piece. Section 2 (seven chapters) grows it into a toy
+GPT, with running measurements of loss, sampling quality, and inference
+speedups. Section 3 (six chapters) is about what to do with this
+understanding — why software engineering is not ending as a career, how
+to use AI tools competently, and where the field is hiring.
+
+Written for readers with high-school algebra and a willingness to look
+at code. No hype, no PhD prerequisite, no metaphors. Plain-English
+explanation alongside real, running code, with honest acknowledgement
+of what modern LLMs are and are not.
+
+If you have ever wanted to go from "LLMs are magic" to "LLMs are a
+specific kind of program I understand," this is the book.
+
+
+----- CATALOG BLURB (≈50 words) -----
+
+Two small C++ programs, twenty-eight plain-language chapters, one walk
+through the exact arithmetic inside every modern language model. Start
+by reversing a list of digits in 540 lines of code. End by generating
+text from a prompt. Close with what this understanding means for your
+career.
+
+
+----- SHORT TAGLINE -----
+
+How ChatGPT actually works, explained from the arithmetic up through a
+small C++ program you can read, run, and grow yourself.
+
+
+----- EVEN SHORTER (one-liner for listings) -----
+
+A 540-line C++ program demystifies modern AI.
+
+
+----- KEY SELLING POINTS (for back cover bullet list, if useful) -----
+
+- Runs on any laptop in seconds; no GPU, no cloud, no API keys required.
+- Complete end-to-end transformer in one C++ file (minai.cpp, 540 lines).
+- Companion program (maxai.cpp) grows chapter by chapter into a toy GPT
+  that accepts prompts and generates text, with BPE tokenizer and KV
+  cache.
+- Three sections serve three different readers: the simple picture
+  (Section 1), the textbook depth (Section 2), and the career-field
+  essay (Section 3).
+- Historical lineage traced back to a 1975 PDP-11 program; a working
+  fixed-point softmax demo shows the original trick running.
+- Honest about what modern LLMs can and cannot do: hallucination,
+  out-of-distribution failure, and the memory wall are demonstrated
+  in miniature.
+- Zero prerequisites beyond high-school algebra and a willingness to
+  look at code.
