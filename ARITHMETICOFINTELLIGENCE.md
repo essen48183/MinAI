@@ -1,6 +1,8 @@
-# MinAI: An Introduction to Language Models
+# The Arithmetic of Intelligence
 
-*A companion textbook for `minai.cpp`.*
+**A plain-English walk through every mechanism inside a modern language model, in C++**
+
+*A companion textbook for `minai.cpp` and `maxai.cpp`.*
 
 *For anyone curious about how modern large language models — ChatGPT, Claude, Gemini, Llama, and every other generative AI — actually work. Not as metaphor, not as vibe, but as specific arithmetic you could read and, in principle, type out yourself. No prerequisites beyond comfort with high-school algebra and a willingness to look at code; every more advanced concept is derived on the spot when it is needed.*
 
@@ -1254,7 +1256,7 @@ MaxAI enforces the pairing at startup. If you invoke `--task=next_token` without
 error: --task=next_token requires --causal=1
        (a non-causal next-token model can trivially peek at
         the very token it is asked to predict, so training is
-        meaningless; see Chapter 16 of GUIDED_TOUR.md for why)
+        meaningless; see Chapter 16 of ARITHMETICOFINTELLIGENCE.md for why)
 ```
 
 You can delete the check (it is five lines near the end of `parse_args`) if you want to run the "cheating" experiment as a pedagogical demonstration — watching the loss drop impossibly fast and the model learn exactly nothing is itself instructive — but the default stance is "safe by construction."

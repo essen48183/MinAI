@@ -35,7 +35,7 @@ xattr -d com.apple.quarantine ./minai
 Each binary is the compiled MinAI program — the exact `minai.cpp` from this
 repository. Run with `./minai` for the default demo, or `./minai --help`
 for all flags. See [../TRAINER.md](../TRAINER.md) for the flag reference
-and [../GUIDED_TOUR.md](../GUIDED_TOUR.md) for the textbook walkthrough.
+and [../ARITHMETICOFINTELLIGENCE.md](../ARITHMETICOFINTELLIGENCE.md) for the textbook walkthrough.
 
 ## How these are built
 

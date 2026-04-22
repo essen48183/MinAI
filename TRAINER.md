@@ -2,7 +2,7 @@
 
 A single-file C++ transformer that learns to reverse `[0..7] → [7..0]`. 1,216 to 4,032 parameters depending on config. Ancestry: Damien Boureille's [ATTN-11](https://github.com/dbrll/ATTN-11) (PDP-11 MACRO-11 assembly) → Dave Plummer's [2.11BSD port](https://github.com/davepl/pdpsrc/tree/main/bsd/attn) → this repo (Apple-Silicon C++).
 
-> **New to this and want the long explanation?** Read **[GUIDED_TOUR.pdf](GUIDED_TOUR.pdf)** (generated from `GUIDED_TOUR.md`) first. It is a textbook-style walkthrough of every concept the code uses — what a model is, what attention does, what calculus is actually for, and how the whole thing trains — written for a reader who has taken some math in school but has never seen *why* any of it mattered. A bright high-schooler can follow it. The last chapter is a **hands-on walkthrough of the flags**: run a command, see what it teaches, run the next one. This file (TRAINER.md) is the terse operator's manual; `GUIDED_TOUR.md` is the "what is going on under the hood" companion. Read them side by side with `minai.cpp` open and you will actually see the curtain pulled back.
+> **New to this and want the long explanation?** Read **[ARITHMETICOFINTELLIGENCE.pdf](ARITHMETICOFINTELLIGENCE.pdf)** (*The Arithmetic of Intelligence*, generated from `ARITHMETICOFINTELLIGENCE.md`) first. It is a three-section textbook walkthrough of every concept the code uses — what a model is, what attention does, what calculus is actually for, how the whole thing trains, and, in Section 2, how it grows into a toy GPT with BPE tokenizer and KV cache. Written for a reader who has taken some math in school but has never seen *why* any of it mattered; a curious adult with high-school algebra can follow it. Section 1's last chapter is a **hands-on walkthrough of the flags**: run a command, see what it teaches, run the next one. This file (TRAINER.md) is the terse operator's manual; `ARITHMETICOFINTELLIGENCE.md` is the "what is going on under the hood" companion. Read them side by side with `minai.cpp` (and, for Section 2, `maxai.cpp`) open, and you will actually see the curtain pulled back.
 
 ---
 
@@ -87,7 +87,7 @@ Each command below is tuned to have enough `--steps` for the reader to see the t
 ./minai --task=mod_sum --random=1 --batch=16 --layernorm=1 --steps=3000     # local task; FFN does the work
 
 # ---- ARCHITECTURAL EDGE CASES ---------------------------------------------------
-./minai --random=1 --causal=1 --steps=200000                         # causal mask plateaus at exactly 55% (see Chapter 14 Step 4 in GUIDED_TOUR for why)
+./minai --random=1 --causal=1 --steps=200000                         # causal mask plateaus at exactly 55% (see Chapter 14 Step 4 in ARITHMETICOFINTELLIGENCE for why)
 ./minai --blocks=32 --layernorm=0 --steps=200                        # deep + no LN → NaN in ~150 steps (gradients explode)
 ./minai --blocks=32 --layernorm=1 --steps=1000                       # same depth + LN → trains smoothly to 8/8 on fixed
 ./minai --blocks=8 --layernorm=1 --random=1 --batch=16 --steps=2000  # mid-depth + LN → 100% on random reverse

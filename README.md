@@ -69,7 +69,7 @@ Two companion documents live next to the source. **Read the one that matches you
 
 - **[TRAINER.md](TRAINER.md)** / [TRAINER.pdf](TRAINER.pdf) — the terse operator's manual. Flag reference, task zoo, worked examples. If you already know what a transformer is and just want to drive this one, start here.
 
-- **[GUIDED_TOUR.md](GUIDED_TOUR.md)** / [GUIDED_TOUR.pdf](GUIDED_TOUR.pdf) — a 14-chapter textbook written for a reader who has taken some math but has never seen *why* calculus, linear algebra, or probability matter. Builds every concept from scratch — what a model is, what attention does, why GPUs are suddenly the bottleneck of the AI industry. The last chapter is a hands-on walkthrough of the flags: run this command, see this lesson, run the next one. A bright high-schooler can follow it.
+- **[ARITHMETICOFINTELLIGENCE.md](ARITHMETICOFINTELLIGENCE.md)** / [ARITHMETICOFINTELLIGENCE.pdf](ARITHMETICOFINTELLIGENCE.pdf) — *The Arithmetic of Intelligence*, a three-section textbook that builds every concept from scratch: what a model is, what attention does, why GPUs are suddenly the bottleneck of the AI industry. Section 1 (Chs 1–15) is the simple introduction, grounded in `minai.cpp` and including a hands-on walkthrough of every flag. Section 2 (Chs 16–22) grows the program into `maxai.cpp`, a toy GPT that accepts prompts, tokenizes with BPE, samples with temperature/top-k/top-p, and runs under a KV cache. Section 3 (Chs 23–28) is a career/field essay on where AI is going and why software engineering is not ending. Written for a reader who has taken some math but has never seen *why* any of it mattered; a curious adult with high-school algebra can follow it end to end.
 
 Read either document with `minai.cpp` open alongside. The comments in the source are in the same tone and will not contradict the prose.
 
@@ -98,7 +98,8 @@ Try `./minai --random=1 --blocks=2 --batch=16 --layernorm=1 --steps=3000` for a 
 minai.cpp            the program — 19 numbered parts, every line commented
 Makefile             one-line clang++ build
 TRAINER.md  .pdf     operator's manual
-GUIDED_TOUR.md .pdf  textbook + hands-on flag tour
+ARITHMETICOFINTELLIGENCE.md .pdf .docx  the book — textbook, toy-GPT growth, career essay
+maxai.cpp            the Section-2 companion program (grows from minai.cpp)
 README.md            this file
 CLAUDE.md            instructions for the AI assistant that maintains this project
 md2pdf.sh            regenerates PDFs from the .md sources

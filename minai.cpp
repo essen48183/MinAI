@@ -32,7 +32,7 @@
 //  An ASCII loss curve and (when --random=1) a held-out accuracy curve are
 //  printed after training so the reader can see the gradient-descent story
 //  instead of having to imagine it.
-//  See TRAINER.md for a flag reference and GUIDED_TOUR.md for the long
+//  See TRAINER.md for a flag reference and ARITHMETICOFINTELLIGENCE.md for the long
 //  explanation + a hands-on walkthrough of the flags.
 //
 //  HOW THE ORIGINAL DID IT ON A PDP-11 (and what we kept vs. simplified)
@@ -520,7 +520,7 @@ static void layernorm_forward_row(
 //   g_bias   : [D] accumulator for bias gradient (+=)
 //   dx_out   : [D] gradient at the LN input (written; caller decides +=/=)
 //
-// Math — detailed derivation in Chapter 9 of GUIDED_TOUR.md. Short form:
+// Math — detailed derivation in Chapter 9 of ARITHMETICOFINTELLIGENCE.md. Short form:
 //   Let dxhat_d = dy_d * gain_d.
 //   Let R = Σ dxhat_d, S = Σ (xhat_d * dxhat_d).
 //   Then dx_d = invstd * (dxhat_d - R/D - xhat_d * S/D).
