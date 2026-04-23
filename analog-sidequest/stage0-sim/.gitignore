@@ -1,0 +1,4 @@
+# Build artifacts — regenerate with `make`.
+stage0_sim
+*.o
+*.d

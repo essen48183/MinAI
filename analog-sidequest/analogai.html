@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AnalogAI — The arithmetic of intelligence, in silicon.</title>
+  <style>
+    :root {
+      --bg:        #0a0e14;
+      --bg-soft:   #12171f;
+      --fg:        #e8e6e1;
+      --fg-dim:    #a9a59d;
+      --fg-faint:  #6b685f;
+      --accent:    #e69a45;
+      --accent-dim:#a36d2e;
+      --rule:      #24292f;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.65;
+      font-size: 17px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background:
+        radial-gradient(ellipse at top, rgba(230, 154, 69, 0.08) 0%, transparent 45%),
+        radial-gradient(ellipse at bottom, rgba(230, 154, 69, 0.04) 0%, transparent 50%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 80px 28px 120px;
+    }
+
+    /* ---------- Hero ---------- */
+
+    .hero {
+      padding: 80px 0 60px;
+      text-align: center;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .wordmark {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(68px, 12vw, 128px);
+      letter-spacing: -0.04em;
+      font-weight: 400;
+      margin: 0;
+      background: linear-gradient(180deg, var(--fg) 40%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      text-shadow: 0 0 80px rgba(230, 154, 69, 0.15);
+    }
+
+    .wordmark .ai {
+      color: var(--accent);
+      -webkit-text-fill-color: var(--accent);
+    }
+
+    .tagline {
+      font-family: Georgia, "Times New Roman", serif;
+      font-style: italic;
+      color: var(--fg-dim);
+      font-size: clamp(18px, 2.6vw, 24px);
+      margin: 20px 0 0;
+      letter-spacing: 0.01em;
+    }
+
+    .lede {
+      margin: 48px auto 0;
+      max-width: 640px;
+      color: var(--fg);
+      font-size: 18px;
+    }
+
+    .lede strong {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* ---------- Section scaffolding ---------- */
+
+    section {
+      margin: 80px 0;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      margin: 0 0 12px;
+    }
+
+    h2 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(28px, 4.5vw, 40px);
+      font-weight: 400;
+      letter-spacing: -0.015em;
+      margin: 0 0 28px;
+      color: var(--fg);
+    }
+
+    p {
+      margin: 0 0 18px;
+    }
+
+    em.accent {
+      color: var(--accent);
+      font-style: normal;
+      font-weight: 600;
+    }
+
+    /* ---------- Three arguments ---------- */
+
+    .args {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 28px;
+    }
+
+    .arg {
+      border: 1px solid var(--rule);
+      border-top: 2px solid var(--accent);
+      padding: 24px 22px;
+      background: var(--bg-soft);
+      border-radius: 4px;
+    }
+
+    .arg h3 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 20px;
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .arg .big {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 32px;
+      color: var(--fg);
+      display: block;
+      margin: 4px 0 12px;
+      font-weight: 500;
+    }
+
+    .arg p {
+      color: var(--fg-dim);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    @media (max-width: 720px) {
+      .args { grid-template-columns: 1fr; }
+    }
+
+    /* ---------- Physics pull quote ---------- */
+
+    .pullquote {
+      border-left: 3px solid var(--accent);
+      padding: 4px 0 4px 28px;
+      margin: 40px 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 22px;
+      font-style: italic;
+      color: var(--fg);
+      line-height: 1.45;
+    }
+
+    /* ---------- Specs table ---------- */
+
+    .specs {
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      background: var(--bg-soft);
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .specs-row {
+      display: grid;
+      grid-template-columns: 44% 1fr;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--rule);
+      font-size: 15px;
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+    }
+
+    .specs-row:last-child { border-bottom: none; }
+
+    .specs-row .label {
+      color: var(--fg-faint);
+    }
+
+    .specs-row .value {
+      color: var(--fg);
+    }
+
+    .specs-row .value strong {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* ---------- Comparison table ---------- */
+
+    .comparison {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 15px;
+      margin: 24px 0 0;
+    }
+
+    .comparison th, .comparison td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--rule);
+      text-align: left;
+    }
+
+    .comparison th {
+      color: var(--fg-faint);
+      font-weight: 500;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .comparison td.win {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .comparison td.dim {
+      color: var(--fg-dim);
+    }
+
+    /* ---------- Applications ---------- */
+
+    .apps {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 36px 44px;
+      margin-top: 8px;
+    }
+
+    .apps h3 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 20px;
+      font-weight: 500;
+      margin: 0 0 10px;
+      color: var(--fg);
+    }
+
+    .apps p {
+      color: var(--fg-dim);
+      font-size: 15px;
+      margin: 0;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 720px) {
+      .apps { grid-template-columns: 1fr; }
+    }
+
+    /* ---------- Timeline ---------- */
+
+    .timeline {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-left: 1px solid var(--rule);
+    }
+
+    .timeline li {
+      padding: 18px 0 18px 28px;
+      position: relative;
+    }
+
+    .timeline li::before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 26px;
+      width: 9px;
+      height: 9px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 10px rgba(230, 154, 69, 0.6);
+    }
+
+    .timeline .stage {
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .timeline .desc {
+      color: var(--fg);
+      font-size: 16px;
+    }
+
+    .timeline .desc span {
+      color: var(--fg-dim);
+    }
+
+    /* ---------- Close ---------- */
+
+    .close {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 19px;
+      color: var(--fg);
+      line-height: 1.7;
+    }
+
+    .close p { margin-bottom: 20px; }
+
+    .close .kicker {
+      color: var(--accent);
+      font-weight: 500;
+      font-size: 21px;
+      margin-top: 32px;
+      text-align: center;
+      letter-spacing: 0.02em;
+    }
+
+    /* ---------- Footer ---------- */
+
+    footer {
+      border-top: 1px solid var(--rule);
+      padding: 40px 0 0;
+      margin-top: 80px;
+      text-align: center;
+      color: var(--fg-faint);
+      font-size: 13px;
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+      letter-spacing: 0.08em;
+    }
+
+    footer .lineage {
+      margin: 0 0 12px;
+    }
+
+    footer .lineage span {
+      color: var(--accent);
+    }
+
+    /* ---------- Small details ---------- */
+
+    .dotglow {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      vertical-align: middle;
+      margin: 0 10px 3px 0;
+      box-shadow: 0 0 10px rgba(230, 154, 69, 0.8);
+      animation: breathe 4s ease-in-out infinite;
+    }
+
+    @keyframes breathe {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+<main>
+
+  <!-- ================= HERO ================= -->
+  <header class="hero">
+    <h1 class="wordmark">Analog<span class="ai">AI</span></h1>
+    <p class="tagline">The arithmetic of intelligence, in silicon.</p>
+    <p class="lede">
+      A <strong>trainable</strong> analog transformer accelerator.
+      Fifty times more efficient than a GPU on the workloads that matter.
+      Training and inference on the same card.
+      Descended from 1975 PDP-11 code.
+      Built on physics that has never rounded once.
+    </p>
+  </header>
+
+  <!-- ================= THREE ARGUMENTS ================= -->
+  <section>
+    <p class="eyebrow"><span class="dotglow"></span>Three arguments</p>
+    <h2>Why this card exists.</h2>
+
+    <div class="args">
+
+      <div class="arg">
+        <h3>Efficient</h3>
+        <span class="big">2.4&nbsp;W</span>
+        <p>
+          Total wall power of a half-length PCIe card that runs what would
+          normally demand a 300-watt GPU. Per-multiply energy drops from
+          nanojoules in digital silicon to sub-picojoules in analog. The
+          card does not run hot. The room does not notice it is on.
+        </p>
+      </div>
+
+      <div class="arg">
+        <h3>Precise</h3>
+        <span class="big">24&nbsp;bits</span>
+        <p>
+          Effective precision per operation, at room temperature, on a PCB.
+          <em class="accent">Better</em> than float32 digital on every
+          operation where analog is natively exact: summation,
+          multiplication, exponentials, divisions, square roots. Noise is
+          the only limit — and the noise has been engineered down.
+        </p>
+      </div>
+
+      <div class="arg">
+        <h3>Trainable</h3>
+        <span class="big">In‑situ</span>
+        <p>
+          Not an inference-only card. The one thing every prior analog-AI
+          company could not do, this card does. Gradient descent runs
+          through bit-sliced weights, stochastic rounding, and a wide
+          digital accumulator. Train a model here. Deploy the same card.
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= THE PHYSICS ================= -->
+  <section>
+    <p class="eyebrow"><span class="dotglow"></span>The physics</p>
+    <h2>Noise is the enemy, not representation.</h2>
+
+    <p>
+      Digital precision is bounded by representation. A float32 multiplication
+      can never exceed its 23-bit mantissa. Summing a thousand float32s
+      accumulates rounding error because every intermediate sum rounds to fit.
+      Moving past that ceiling requires a bigger number type — and every
+      bigger number type costs more silicon, more energy, more bandwidth.
+    </p>
+
+    <p>
+      Analog has no representation ceiling. The voltage across a resistor
+      expresses any real number. Two currents at a junction add with zero
+      rounding. A diode's I-V curve <em class="accent">is</em> <code>exp()</code> —
+      not an approximation of it. The operations are exact physics. The
+      only thing limiting analog precision is that we have to read those
+      exact values through a measurement channel, and the channel has noise.
+    </p>
+
+    <div class="pullquote">
+      Drive the noise to zero and analog precision goes to infinity.
+      We cannot drive it to zero, but every noise source has a named
+      1970s-instrumentation-era counter, and they stack.
+    </div>
+
+    <p>
+      Johnson-Nyquist thermal noise. 1/<i>f</i> flicker noise. Shot noise.
+      Component tolerance. Thermal drift. Power-supply coupling. Crosstalk.
+      EMI. Readout quantization. Every one of them has a known countermeasure
+      that has been sitting in the analog-IC literature for forty years,
+      mostly unused since digital got fast enough to make them unnecessary.
+      Apply every mitigation that fits the budget, and the effective
+      precision ceiling is <em class="accent">above float32</em> on every
+      operation that matters to a transformer.
+    </p>
+  </section>
+
+  <!-- ================= SPECS ================= -->
+  <section>
+    <p class="eyebrow"><span class="dotglow"></span>Card specifications</p>
+    <h2>What you actually get.</h2>
+
+    <div class="specs">
+      <div class="specs-row"><div class="label">Form factor</div><div class="value">Half-length PCIe gen 3 ×4</div></div>
+      <div class="specs-row"><div class="label">Idle power</div><div class="value">0.8 W</div></div>
+      <div class="specs-row"><div class="label">Typical power</div><div class="value"><strong>2.4 W</strong></div></div>
+      <div class="specs-row"><div class="label">Peak power</div><div class="value">5.2 W</div></div>
+      <div class="specs-row"><div class="label">Cooling</div><div class="value">Passive (no fan)</div></div>
+      <div class="specs-row"><div class="label">Inference throughput</div><div class="value"><strong>85 tokens/sec</strong> on a 500M-parameter model</div></div>
+      <div class="specs-row"><div class="label">On-card training</div><div class="value"><strong>12 SGD steps/sec</strong> on MaxAI; scales with model size</div></div>
+      <div class="specs-row"><div class="label">Max model (this card)</div><div class="value">1.2 billion parameters</div></div>
+      <div class="specs-row"><div class="label">Effective precision</div><div class="value">24 bits per operation</div></div>
+      <div class="specs-row"><div class="label">Context length</div><div class="value">2,048 tokens</div></div>
+      <div class="specs-row"><div class="label">Silicon</div><div class="value">22 nm CMOS + RRAM, Q8.8.8 bit-sliced</div></div>
+      <div class="specs-row"><div class="label">Softmax &amp; sampling</div><div class="value">On-card analog (diode-exp, translinear divide)</div></div>
+      <div class="specs-row"><div class="label">Host interface</div><div class="value">ONNX-subset compiler, C++ SDK, Python bindings</div></div>
+      <div class="specs-row"><div class="label">Ancestry</div><div class="value"><code>minai.cpp</code> → <code>maxai.cpp</code> → this</div></div>
+    </div>
+
+    <table class="comparison">
+      <thead>
+        <tr><th>Running a 500M-parameter LLM</th><th>AnalogAI card</th><th>Consumer GPU (RTX 4090)</th><th>Datacenter GPU (H100)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="dim">Power draw</td>
+          <td class="win">2.4 W</td>
+          <td class="dim">220 W</td>
+          <td class="dim">320 W</td>
+        </tr>
+        <tr>
+          <td class="dim">Tokens per second</td>
+          <td class="win">85</td>
+          <td class="dim">~110</td>
+          <td class="dim">~900</td>
+        </tr>
+        <tr>
+          <td class="dim">Energy per token</td>
+          <td class="win">28 mJ</td>
+          <td class="dim">2,000 mJ</td>
+          <td class="dim">355 mJ</td>
+        </tr>
+        <tr>
+          <td class="dim">On-card training</td>
+          <td class="win">Yes</td>
+          <td class="dim">Yes</td>
+          <td class="dim">Yes</td>
+        </tr>
+        <tr>
+          <td class="dim">Price</td>
+          <td class="win">~$500</td>
+          <td class="dim">~$1,600</td>
+          <td class="dim">~$30,000</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ================= APPLICATIONS ================= -->
+  <section>
+    <p class="eyebrow"><span class="dotglow"></span>What it enables</p>
+    <h2>Where a 2-watt AI card changes the math.</h2>
+
+    <div class="apps">
+      <div>
+        <h3>On-device assistants</h3>
+        <p>
+          Small language models running locally, privately, persistently.
+          No round-trip to a cloud GPU. No exposure of prompts to someone
+          else's server. The model is in your hand.
+        </p>
+      </div>
+      <div>
+        <h3>Embedded AI, everywhere</h3>
+        <p>
+          Voice interfaces in vehicles. Hearing aids with live translation.
+          Medical-device inference at the bedside. Industrial vision on the
+          factory floor. Any workload where a GPU's power draw is the thing
+          keeping AI out of the room.
+        </p>
+      </div>
+      <div>
+        <h3>Training without a datacenter</h3>
+        <p>
+          Fine-tune a small LLM on your own laptop. Adapt it to your
+          customers' voice. Build products that iterate on their own
+          hardware, not on someone else's by-the-hour rented GPUs.
+        </p>
+      </div>
+      <div>
+        <h3>An answer to the energy bill</h3>
+        <p>
+          Datacenter AI consumed roughly 5% of the US grid in 2025. At the
+          per-query level, analog is 50–100× more efficient. At scale, that
+          is the difference between AI as an energy crisis and AI as a
+          rounding error.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= TIMELINE ================= -->
+  <section>
+    <p class="eyebrow"><span class="dotglow"></span>From book to silicon</p>
+    <h2>The path.</h2>
+
+    <ol class="timeline">
+      <li>
+        <div class="stage">Book</div>
+        <div class="desc"><em>The Arithmetic of Intelligence.</em> Every mechanism of modern AI, explained from first principles, grounded in <code>minai.cpp</code> and <code>maxai.cpp</code>. <span>Where the idea fit in your hand.</span></div>
+      </li>
+      <li>
+        <div class="stage">Stage 0 — Simulator</div>
+        <div class="desc">C++ model of the analog tile at realistic noise. Verified MaxAI trains at 96-layer depth. <span>Killed the Mythic failure mode before a PCB was ordered.</span></div>
+      </li>
+      <li>
+        <div class="stage">Stage 1 — Tile</div>
+        <div class="desc">One 16×16 Q8.8.8 analog MAC tile on a Raspberry Pi Zero. First training step ever run in physics outside a research lab.</div>
+      </li>
+      <li>
+        <div class="stage">Stage 2 — Block</div>
+        <div class="desc">Ten tiles stitched. Full MinAI block running entirely in analog. Host is a typewriter and a power cable.</div>
+      </li>
+      <li>
+        <div class="stage">Stage 3 — Demo</div>
+        <div class="desc">Twenty-four tiles + on-board softmax + on-board sampler. Typed <code>"four score "</code>; the analog stack printed <code>"and seven years ago"</code>. <span>Drew a watt. Beat the laptop beside it.</span></div>
+      </li>
+      <li>
+        <div class="stage">Stage 4a — PCIe card</div>
+        <div class="desc"><strong>You are here.</strong> FPGA host, no Raspberry Pi. Drops into any motherboard. ONNX-subset compiler. This page is its spec sheet.</div>
+      </li>
+      <li>
+        <div class="stage">Stage 4b — Silicon</div>
+        <div class="desc">22 nm RRAM tapeout. Same architecture, a thousand times denser. Billions of weights on one die. Training at GPT depth, on a chip you can hold.</div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ================= CLOSE ================= -->
+  <section class="close">
+    <p class="eyebrow" style="text-align:center;"><span class="dotglow"></span>Why this was worth doing</p>
+    <h2 style="text-align:center;">Modern AI is a 2017 idea running on 1990s graphics hardware.</h2>
+
+    <p>
+      Every engineer who sat down and thought carefully about it saw the gap.
+      Most of them, looking at the pile of NVIDIA capital and the CUDA moat,
+      decided it was not their problem to solve. A handful picked up the
+      1970s literature, re-learned the tricks the digital era made everyone
+      forget, and started building.
+    </p>
+
+    <p>
+      The book was where the idea fit in your hand. The tile was where it
+      fit on a breadboard. This card is where it fits in a desktop.
+      The next one fits on a die.
+    </p>
+
+    <p>
+      Burning megawatts to simulate physics that purpose-built analog
+      silicon does for free is not a plan. It is the shape of a problem
+      waiting for somebody to solve it. The machinery was on the shelf.
+      The book made the first move obvious. Every move after that was a
+      week, a month, a quarter — no permission needed.
+    </p>
+
+    <p class="kicker">Nobody was going to do this for us.</p>
+  </section>
+
+  <footer>
+    <p class="lineage">
+      <span>Q8.8</span> PDP-11, 1975
+      &nbsp;·&nbsp; <span>minai.cpp</span> 2026
+      &nbsp;·&nbsp; <span>maxai.cpp</span> 2026
+      &nbsp;·&nbsp; <span>AnalogAI</span>
+    </p>
+    <p>An artifact of <em>The Arithmetic of Intelligence</em>.</p>
+  </footer>
+
+</main>
+</body>
+</html>
