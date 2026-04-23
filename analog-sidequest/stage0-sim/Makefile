@@ -1,23 +1,31 @@
 # Stage 0 Simulator — one-command build + run
 #
-# `make`        -> builds stage0_sim
-# `make run`    -> builds and runs
-# `make clean`  -> removes the binary
+# `make`        -> builds all stage-0 binaries
+# `make run`    -> builds and runs both tests in sequence
+# `make clean`  -> removes the binaries
 
 CXX      = clang++
 CXXFLAGS = -std=c++17 -O2 -Wall -Wextra
 
-BIN  = stage0_sim
-SRCS = main.cpp analog_sim.cpp
-HDRS = analog_sim.h
+BINS   = stage0_sim stage0_sgd
+COMMON = analog_sim.cpp
+HDRS   = analog_sim.h
 
-$(BIN): $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) -o $(BIN) $(SRCS)
+all: $(BINS)
 
-run: $(BIN)
-	./$(BIN)
+stage0_sim: main.cpp $(COMMON) $(HDRS)
+	$(CXX) $(CXXFLAGS) -o $@ main.cpp $(COMMON)
+
+stage0_sgd: sgd_test.cpp $(COMMON) $(HDRS)
+	$(CXX) $(CXXFLAGS) -o $@ sgd_test.cpp $(COMMON)
+
+run: all
+	@echo "---- stage0_sim (precision test) ----"
+	@./stage0_sim
+	@echo "---- stage0_sgd (SGD convergence test) ----"
+	@./stage0_sgd
 
 clean:
-	rm -f $(BIN)
+	rm -f $(BINS)
 
-.PHONY: run clean
+.PHONY: all run clean
