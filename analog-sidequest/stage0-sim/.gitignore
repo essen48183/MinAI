@@ -1,5 +1,6 @@
 # Build artifacts — regenerate with `make`.
 stage0_sim
 stage0_sgd
+stage0_maxai
 *.o
 *.d

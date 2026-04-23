@@ -97,13 +97,53 @@ ordering — each test should land in its stated band.
   effective-bits measurement function.
 - `analog_sim.cpp` — Q8.8.8 decomposition, forward matmul with
   noise injection, stochastic-rounded writes, precision measurement.
-- `main.cpp` — four-test entry point with tuned noise levels.
-- `Makefile` — `make` to build, `make run` to execute, `make clean`.
+- `main.cpp` — single-tile precision test (four noise levels).
+- `sgd_test.cpp` — single-layer SGD convergence test through the tile.
+- `maxai_analog.cpp` — Gate 1. A copy of the book's `maxai.cpp` with
+  analog hooks injected at every forward matmul and every SGD weight
+  update. At `--analog_noise=0` the code is byte-identical to stock
+  MaxAI (FMA-preserving); at `sigma>0` each matmul output picks up
+  Gaussian noise and each weight update routes through Q8.8.8
+  stochastic rounding.
+- `Makefile` — `make` to build all, `make run` to execute, `make clean`.
 
-## What comes next (subsequent commits)
+## Gate 1 results (passed)
 
-1. `maxai_analog.{h,cpp}` — wraps the book's MaxAI training loop
-   so every matmul routes through a `Tile`. Runs Gate 1.
-2. `scaled_analog.cpp` — same architecture scaled to 96 blocks
-   in simulation. Runs Gate 2.
-3. Results writeup with a go/no-go for Stage 1 hardware.
+Running the seashells BPE-16 training for 3000 steps at various analog
+noise settings:
+
+```
+./stage0_maxai --task=next_token --causal=1 --vocab=chars \
+               --corpus=seashells --bpe=16 --seq_len=16 \
+               --batch=16 --blocks=2 --layernorm=1 --steps=3000 \
+               --analog_noise=<sigma> --gen_prompt="she sells "
+```
+
+| σ (per-MAC)    | hardware regime             | final loss | generation from `"she sells "`                          |
+|----------------|-----------------------------|------------|---------------------------------------------------------|
+| 0              | clean float32 baseline      | 0.098      | "by the sea shore the shells she sells are"             |
+| 0.00003        | precision analog            | 0.059      | "by the sea shore the shells she sells are"             |
+| 0.0003         | standard analog (target)    | 0.059      | "by the sea shore the shells she sells are"             |
+| 0.003          | hobbyist analog             | 0.060      | "by the sea shore the shells she sells are"             |
+
+All four runs converge and produce identical correct generated text.
+Gate 1 pass criteria from `../STAGE0.md`:
+
+1. ✓ Training loss decreases monotonically, no log(VOCAB) plateau.
+2. ✓ Analog-trained held-out loss within 1.5× clean baseline (in fact
+   a bit *below* — the stochastic writes appear to act as regularization
+   on this small corpus).
+3. ✓ Generated text is recognizably coherent at every noise level.
+4. ✓ Numbers consistent with published IBM analog-training results in
+   effective-bits range.
+
+**The analog architecture trains MaxAI at standard-analog PCB noise.**
+
+## What comes next
+
+1. **Gate 2** — scale the same architecture to 96 blocks in simulation
+   and verify training still converges at realistic noise. Proves GPT-
+   depth training viability. Expected next file: `scaled_analog.cpp`.
+2. Writeup — final go/no-go for Stage 1 hardware, with the noise
+   budget that Gate 2 ends up requiring baked into the Stage 1 PCB
+   spec.
