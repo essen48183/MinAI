@@ -181,6 +181,32 @@ layer, is the whole tile.
 
 ---
 
+## Routing notes when you lay the board out
+
+A couple of decisions that matter at schematic/layout time and are
+easy to miss.
+
+- **Pair slice roles on-die.** Each MCP4251 package holds two wiper
+  channels sharing one silicon die — 15 ppm/°C ratiometric tempco.
+  Route the **MSB and middle slices of the same weight** onto the
+  two channels of one MCP4251. That's the tightest-coupled ratio
+  pair in the tile (they sum with a 256:1 weighting, so any drift
+  between them shifts the effective weight value directly). The LSB
+  slice can live on a separate package — its contribution is already
+  scaled by 1/65536, so drift between LSB and the other slices is
+  three orders of magnitude less painful.
+
+- **Ask the fab for 6-layer AND 8-layer quotes.** The original STAGE1
+  timeline budgeted an 8-layer board with careful stripline routing
+  because the single-channel MCP4131 line put ~768 parts on the
+  board. MCP4251 halves the package count, which can plausibly fit
+  on 6 layers — saving ~30 % of fab cost and 2–3 days of fab lead
+  time. Get both quotes from JLCPCB/PCBWay before committing; the
+  6-layer number lets you decide if the layout-density savings pay
+  for the routing discipline 8 layers buys you.
+
+---
+
 ## The weight-loader, in Pi-side software
 
 Pseudocode for the boot flow, in C++ (Pi side):
