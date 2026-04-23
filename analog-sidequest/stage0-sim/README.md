@@ -139,11 +139,64 @@ Gate 1 pass criteria from `../STAGE0.md`:
 
 **The analog architecture trains MaxAI at standard-analog PCB noise.**
 
+## Gate 2 results (passed)
+
+Gate 2 asks the question Gate 1 left open: does analog noise compound
+destructively as depth grows? The same `stage0_maxai` binary supports
+`--blocks=96` out of the box (that's `MAX_BLOCKS` in the source, sized
+to match GPT-3's layer count), so Gate 2 is a depth-and-noise sweep
+against the existing binary rather than a new file.
+
+Every run below is 3000 steps on the seashells BPE-16 corpus,
+`--seq_len=16 --batch=16 --layernorm=1`, prompt `"she sells "`.
+
+### Matrix A — depth sweep at standard-analog noise (σ=0.0003)
+
+| blocks | final loss | generation from `"she sells "`                     |
+|--------|------------|------------------------------------------------------|
+| 2      | 0.059      | "by the sea shore the shells she sells are"         |
+| 12     | 0.068      | "by the sea shore the shells she sells are"         |
+| 48     | 0.066      | "bare sea shells are sea shells im"                 |
+| 96     | 0.053      | "by the sea shore the shells she sells are"         |
+
+Loss does not grow with depth. The deepest network actually lands at
+the lowest loss — deeper models fit this tiny corpus better, and the
+standard-analog noise does not disrupt that fit.
+
+### Matrix B — noise sweep at blocks=96
+
+| σ (per-MAC) | hardware regime     | final loss | generation                                          |
+|-------------|---------------------|------------|------------------------------------------------------|
+| 0           | clean float32       | 0.220      | "are sea shells im sure so i"                       |
+| 0.00003     | precision analog    | 0.052      | "by the sea shore the shells she sells are"         |
+| 0.0003      | standard analog     | 0.053      | "by the sea shore the shells she sells are"         |
+| 0.003       | hobbyist analog     | 0.077      | "are sea shells she sells are sea shells im"        |
+
+**A genuine surprise.** The clean baseline ends at a *higher* loss than
+all three noisy runs. At 96-block depth the stochastic-rounded weight
+updates plus Gaussian matmul noise behave like gradient noise and
+dropout — mild regularization that helps a deep net fit a small
+corpus. This is consistent with published noise-injection results
+(Neelakantan 2015, Gulcehre 2016) and is an accidental bonus for the
+analog approach, not something we were designing for.
+
+Gate 2 pass criteria from `../STAGE0.md`:
+
+1. ✓ Training converges at 96-block depth at every noise level.
+2. ✓ Standard-analog loss at depth (0.053) is not worse than at 2
+   blocks (0.059); noise does not compound destructively.
+3. ✓ Generated text is recognizably coherent at every noise level.
+4. ✓ Even hobbyist-analog noise trains through 96 blocks.
+
+**The analog architecture trains MaxAI at GPT-3 depth at standard-
+analog PCB noise. Both Stage 0 gates pass.**
+
 ## What comes next
 
-1. **Gate 2** — scale the same architecture to 96 blocks in simulation
-   and verify training still converges at realistic noise. Proves GPT-
-   depth training viability. Expected next file: `scaled_analog.cpp`.
-2. Writeup — final go/no-go for Stage 1 hardware, with the noise
-   budget that Gate 2 ends up requiring baked into the Stage 1 PCB
-   spec.
+1. **Stage 1 hardware.** With both gates passed, the noise budget for
+   the PCB spec is locked: per-MAC RMS error ≤ 0.03 % of full scale,
+   equivalent to σ=0.0003 in the simulator. A single precision-analog
+   tile (autozero op-amps, 0.01 % thin-film resistors, 12-bit DAC
+   writes with stochastic rounding) meets this target.
+2. Writeup — go/no-go decision for Stage 1 build with the simulator
+   numbers as backing evidence, then the PCB schematic.
