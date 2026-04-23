@@ -27,10 +27,12 @@ projection for one token), run both forward and backward. That is
 enough to prove the architecture is *trainable*, not just
 inferable — which is the whole point.
 
-Stage 1 assumes Stage 0 (the simulator viability gate, see
-`STAGE0.md`) has already passed. If it hasn't, do not fabricate
-this board. The Stage 1 BOM and time budget below are committed
-only after Stage 0 gives a `go`.
+Stage 0 (the simulator viability gate, see `STAGE0.md`) passed
+both gates — the go/no-go is in `STAGE1_GONOGO.md`. The Stage 1
+BOM and tolerances below incorporate what Stage 0 actually
+measured, which is often tighter than the numbers originally
+predicted and in one case (noise at depth) is unexpectedly
+looser.
 
 ---
 
@@ -58,14 +60,19 @@ worth.
 ### On the tile PCB
 
 Stage 1 implements the Q8.8.8 bit-sliced architecture the
-Stage-0 simulator validated: **three digipots per weight** giving
-24-bit effective precision from 8-bit parts. BOM scales
-accordingly.
+Stage-0 simulator validated: **three digipots per weight**. The
+ceiling is ~24 bits effective (zero-noise); the locked Stage 1
+target is 11 bits effective (σ ≤ 0.0003 per-MAC, the
+standard-analog regime Gate 1/Gate 2 both trained at). The bit-
+sliced structure is needed because we cannot guarantee an
+8-bit cell's step size sits below the training-relevant
+gradient; three slices gives enough headroom for stochastic
+rounding to resolve updates much finer than one tap.
 
 | Part | Qty | Role | Unit cost | Notes |
 |---|---|---|---|---|
 | AD5270BRMZ-20 (or MCP4131-103) | **768** | **Three per weight (Q8.8.8 bit-slicing)** | $1–$3 | Single-channel digipots. 256-step (MCP) or 1024-step (AD). SPI. Organized in three planes: MSB, middle, LSB. Binary-weighted feedback at the summing op-amp sums the three planes with coefficients 1, 1/256, 1/65536. |
-| **AD8629 (dual autozero op-amp)** | **16** | **Summing amplifiers — autozero for 20+ bit path precision** | $2 | Replaces the generic TLV9002. Essential for exploiting the 24-bit weight precision. |
+| **AD8629 (dual autozero op-amp)** | **16** | **Summing amplifiers — autozero for drift and 1/f stability** | $2 | Replaces the generic TLV9002. Chosen for its ≤ 1 µV Vos and near-zero drift over temperature. That drift stability — not the 24-bit ceiling — is what keeps per-MAC noise inside the 0.03 % standard-analog budget over a training run. A generic op-amp's thermal Vos drift alone would exceed that budget. |
 | MCP4728 (quad 12-bit DAC) | 4 | Input voltage drivers | $3 | I²C. Also used for write-path dither injection during stochastic rounding. |
 | ADS1115 (4-ch 16-bit ADC) | 4 | Output readers | $4 | I²C. Oversampling recovers additional bits. |
 | **23LC1024 SRAM × 2** | **2** | **32-bit-wide gradient accumulator** | **$3 ea** | **Widened from 16-bit to 32-bit per weight. Two SRAMs chained on SPI, giving 256 KB total accumulator storage.** |
@@ -85,11 +92,20 @@ If that cost is the binding constraint in a given iteration, a
 Q8.8 (single-cell) variant is a valid "half-bill" prototype —
 you can etch the single-slice version in-house first to debug
 topology, then move to the Q8.8.8 pro-fab version once the
-single-slice topology is working. But the Gate-0 simulator
-passes *only* for the Q8.8.8 configuration; a single-cell build
-will not train at 96-block depths and is explicitly not a
-miniature of the scalable architecture. It is a stepping stone
-for your workflow, not a representative demonstration.
+single-slice topology is working.
+
+A Stage 0 surprise re-opened this fallback. Gate 2 showed that
+even hobbyist-grade noise (σ = 0.003, roughly a single-cell Q8
+tile's effective tolerance) still trained MaxAI cleanly at
+96-block depth — in fact with *lower* loss than the clean
+float32 baseline, because analog noise acts as regularization in
+deep stacks. This does not promote Q8.8 to the production
+architecture, but it does mean a single-cell bring-up board is no
+longer categorically "won't train." It is a cheaper learning
+vehicle than we previously thought. The Q8.8.8 configuration
+remains the committed Stage 1 build because it hits the
+standard-analog precision target with margin; Q8.8 hits the
+hobbyist regime with almost none.
 
 If you want to reduce component count at the expense of dynamic
 range, you can use 8-channel digipots like the AD5204 (4 × 256-step
@@ -211,8 +227,26 @@ for (int j = 0; j < 16; ++j)
 ```
 
 Compare `y` to the output of the same matmul computed in pure C++
-against the same weights. Stage-1 success: the two vectors match
-within 1–2% RMS across 1000 random test inputs.
+against the same weights.
+
+**Stage 1 success bar — tightened from the pre-Stage-0 number.**
+Originally the bar was "within 1–2 % RMS." After Stage 0, we know
+what the RMS actually has to be to land inside the training
+budget Gate 2 validated. With 16 summed MACs per output, the
+output RMS is ≈ √16 × σ_perMAC = 4 σ_perMAC. So:
+
+- **Target**: output RMS ≤ **0.1 %** of full scale across 1000
+  random inputs. That corresponds to σ_perMAC ≈ 0.0003 — the
+  standard-analog budget Gate 2 trained at with margin. This is
+  the bar the pro-fab Q8.8.8 build should clear.
+- **Minimum viable**: output RMS ≤ **0.3 %** of full scale. That
+  corresponds to σ_perMAC ≈ 0.0008 — between standard and
+  hobbyist regimes. Training still works (Gate 2 showed σ = 0.003
+  trains at 96 blocks), but margin is thin.
+- **Original "1–2 % RMS" bar is wrong** in hindsight: that
+  corresponds to σ_perMAC ≈ 0.003, the hobbyist regime with no
+  margin. Gate 2 said this still trains, but the bench should
+  diagnose, not tolerate, any tile that lands there.
 
 ---
 
@@ -270,6 +304,15 @@ within the precision expected from the noise model**, Stage 1 is
 complete and you have demonstrated **the first training step of
 any analog AI system built outside a research lab**. That is the
 artifact on which the rest of the project stands.
+
+The quantitative bar is: update magnitude matches the software-
+computed SGD step within the same 0.1 % RMS margin the forward
+pass hit in Experiment 3. Gate 2 proved 96-block training works
+at σ = 0.003 (hobbyist); Stage 1's 0.0003 target has a
+comfortable 10× margin, so a Stage 1 tile that runs one correct
+training step is nowhere near the cliff. If the step magnitude is
+wildly off, the fault is on the bench (SPI, wiper, accumulator
+logic) — not at the architectural margin.
 
 If it doesn't move the expected direction, the diagnostic is
 straightforward:

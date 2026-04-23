@@ -192,9 +192,15 @@ task of this size. That ratio gets better at scale, not worse.
 - **Weights are digitally trained.** Training is still done in
   software; the analog hardware loads the trained weights. Same as
   every production analog AI chip.
-- **Noise per tile is real.** Deep generation is susceptible to
-  drift. Stage 3 uses per-tile calibration and a small error-
-  injection-tolerance margin during training.
+- **Noise per tile is real.** Short-term drift is still managed
+  with per-tile calibration and periodic reference reads. What
+  changed between pre-Stage-0 and now: we no longer need to
+  deliberately inject training-time noise as a generalization aid.
+  Gate 2 showed that the analog stack's own stochastic-rounded
+  writes plus Gaussian matmul noise already act as regularization
+  at depth (at 96 blocks, clean loss 0.22 vs noisy loss 0.05–0.08).
+  The architecture is self-regularizing; what's left for Stage 3 is
+  keeping drift bounded, not adding noise.
 - **Scaling to GPT is still a cost question, not a physics
   question.** The Stage-3 box is about 2,000× too few tiles to run
   GPT-3. Fitting 2,000× more tiles on a card is what Stage 4b
