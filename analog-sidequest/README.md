@@ -51,7 +51,73 @@ The card is a proof of concept, not a product. What it proves is:
 
 ---
 
-## The four stages
+## The critical difference from prior attempts
+
+Every commercial analog-AI attempt from 2012–2024 took the same
+shortcut: *train the model on NVIDIA, deploy on our analog chip*.
+That shortcut has killed every one of them commercially. The
+customer math is unavoidable — if the customer already needs a
+GPU for training, they just use it for inference too rather than
+bring in a second vendor.
+
+**This project treats training on the analog hardware as a
+first-class, non-negotiable requirement**, addressed as Stage 0
+(in simulation) and Experiment 4 of Stage 1 (on real hardware).
+
+The core framing — different from every prior analog-AI project —
+is **noise is the enemy, not representation.** Digital precision
+is bounded by the number format (float32 can never exceed its
+23-bit mantissa). Analog precision is bounded only by the noise
+of the measurement channel, and every noise source (thermal,
+flicker, shot, drift, crosstalk, EMI) has a known engineering
+countermeasure. Aggressively applying those countermeasures —
+precision thin-film components, autozero op-amps, delta-sigma
+ADCs, 8-layer stripline PCBs, calibration reference cells — pushes
+analog effective precision to **24–28 bits per operation**, which
+is *better* than float32 digital on the operations where analog is
+naturally exact (Kirchhoff summation, Ohm's-law multiplication,
+exp/log/sqrt/tanh through diode and transistor I-V curves).
+
+The architecture combines **three hardware precision amplifiers**
+— Q8.8.8 bit-slicing (three analog cells per weight for 24-bit
+nominal precision), autozero summing op-amps (20+ bit op-amp
+paths), a 32-bit digital gradient accumulator, plus continuous
+calibration via dedicated reference cells — with **five software
+training tricks** from the 1970s–1990s analog-computing literature
+— mixed-precision updates, stochastic rounding, temporal
+oversampling, delta encoding, and analog physics as the native
+lookup table. Together they clear the precision bar where IBM
+research has demonstrated analog training of **96-layer
+transformers**, not just shallow networks.
+
+Softmax, sampling, and all nonlinearities stay analog too — the
+same physics (diode `exp`, translinear divide, winner-take-all or
+ramp-compare samplers) that makes matmul analog-native also makes
+these operations analog-native. The host's digital footprint
+reduces to: weight-load at boot, prompt-token DAC in, output-token
+ID ADC out, and loop control. **One ADC-DAC round-trip per
+generated token, not per layer.**
+
+The project refuses to fabricate any hardware until a pure-
+software Stage 0 simulator passes **two** gates:
+
+- **Gate 1 (functional):** MaxAI (2 blocks) trains to recognizable
+  output at simulated hardware precision.
+- **Gate 2 (scaling):** MaxAI scaled to 96 blocks, same per-layer
+  precision, also trains to recognizable output — proving the
+  architecture scales to GPT depth in principle.
+
+If Gate 1 fails, the project stops. If Gate 2 fails, the
+GPT-depth scaling claim is retracted and the project is rescoped
+as small-model-only (still valid, but a narrower pitch). Only
+passing both gates clears Stage 1 to fabricate hardware.
+
+See `ARCHITECTURE.md` for the five-trick stack and `STAGE0.md` for
+the viability gate.
+
+---
+
+## The five stages
 
 Each stage produces a complete, measurable artifact. Each stage's
 output is the foundation for the next. Nobody has to commit to
@@ -59,7 +125,31 @@ Stage 4 before finishing Stage 1. The project has a clear inflection
 at Stage 3: before it, you are proving the hardware *works*; after
 it, you are proving it *matters*.
 
-### Stage 1 — a single analog matmul tile *(validation)*
+### Stage 0 — the simulator viability gate *(software only, kills the project cheaply if training doesn't work)*
+
+- A C++ simulator of the tile architecture with Q8.8.8 bit-slicing,
+  autozero op-amp paths, a 32-bit gradient accumulator,
+  calibration reference cells, realistic device noise, write
+  quantization, and all nine training tricks implemented.
+- Runs the book's MaxAI training loop through the simulator at
+  both 2-block depth (Gate 1) and 96-block depth (Gate 2).
+- **Pass both gates:** architecture trains at MaxAI scale AND the
+  same architecture scales to GPT-depth in principle. Proceed
+  to Stage 1 with full scaling claim intact.
+- **Pass Gate 1 only:** architecture trains at small scale but
+  compound noise kills deeper networks. Project may still
+  proceed, but the scaling claim gets retracted and the pitch
+  is rescoped to "edge / small-model only."
+- **Fail Gate 1:** the architecture does not train at all at this
+  precision. Project stops. Zero hardware cost.
+- Wall-time estimate: ~two focused weeks. Budget: $0.
+- **What Stage 0 buys:** insurance against repeating Mythic's mistake
+  of fabricating hardware before knowing if the architecture
+  trains, *and* against the Lightmatter mistake of shipping
+  hardware whose scaling ceiling wasn't known until silicon was
+  in hand.
+
+### Stage 1 — a single Q8.8.8 analog matmul tile *(validation, including one training step on real hardware)*
 
 - Raspberry Pi Zero 2W as host.
 - One small PCB holding a 16×16 analog MAC tile (256 weights).
@@ -148,10 +238,11 @@ the architecture is validated enough to spend tapeout money on).
 
 ## The arc, in one sentence per stage
 
-- **Stage 1:** Prove that analog matmul works at all.
-- **Stage 2:** Prove the tile architecture scales to a full transformer block.
-- **Stage 3:** Prove the architecture generates real text — the demo that raises eyebrows.
-- **Stage 4:** Prove the concept scales — either to a consumer-product card or to a silicon die.
+- **Stage 0:** Prove in software that the architecture can train at all, before any hardware is built.
+- **Stage 1:** Prove that analog matmul AND one training step work on real hardware.
+- **Stage 2:** Prove the tile architecture scales to a full transformer block, trainable.
+- **Stage 3:** Prove the architecture trains and generates real text — the demo that raises eyebrows, with no GPU in the loop after initialization.
+- **Stage 4:** Prove the concept scales — either to a consumer-product card or to a silicon die, both carrying training support, not inference-only.
 
 ---
 
@@ -159,14 +250,19 @@ the architecture is validated enough to spend tapeout money on).
 
 - `README.md` — this file.
 - `ARCHITECTURE.md` — the full system architecture, piece by piece,
-  with the "normal computer → analog card" mapping spelled out.
-- `STAGE1.md` — single-tile validation. Schematic, parts list,
-  first three measurement experiments, expected numbers.
+  with the "normal computer → analog card" mapping spelled out,
+  the on-board LayerNorm stage, the stack pattern, the five
+  training tricks, and the ranked constraints.
+- `STAGE0.md` — **the simulator viability gate. Read first.**
+  Software-only. Determines whether hardware is worth building.
+- `STAGE1.md` — single-tile validation, now including the training
+  experiment. Schematic, parts list, four measurement experiments.
 - `STAGE2.md` — full MinAI block across multiple tiles.
 - `STAGE3.md` — the MaxAI demo. Text generation from a prompt,
   on an analog-hardware stack that sits next to your laptop.
 - `STAGE4.md` — the productize-or-miniaturize fork. PCIe card vs.
-  silicon tapeout, both paths laid out.
+  silicon tapeout, both paths laid out, both carrying training
+  support (not inference-only).
 
 ---
 

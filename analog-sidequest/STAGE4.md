@@ -91,11 +91,16 @@ GPT?"
 
 ### What 4b buys
 
-- **A thousand times the density.** A 256×256 crossbar in a 22-nm
-  RRAM process is roughly 0.5 mm² per tile. A 100 mm² die holds
-  hundreds of tiles — tens of millions of weights. A die the size of
-  an H100 (~800 mm²) holds **hundreds of millions to billions**. You
-  have now out-scaled a GPU on density.
+- **A thousand times the density, with GPT-depth training.** At
+  Q8.8.8 in 22 nm RRAM, each tile is ~1.5 mm². An H100-sized die
+  holds hundreds of millions to low billions of weights — and
+  because the architecture (per the Stage 0 Gate 2 simulator)
+  trains at 96-block depth natively, the silicon version is not
+  just a scaled-up inference chip but a **trainable analog AI
+  processor at frontier-model depths.** Every prior commercial
+  analog AI attempt was inference-only; this one carries training
+  through to silicon because the architecture was designed for it
+  from Stage 0.
 - **The definitive architectural answer.** A working silicon
   version of the architecture is what converts "cool side project"
   into "new hardware platform." Every question that began "but

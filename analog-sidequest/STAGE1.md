@@ -13,12 +13,24 @@ afternoon to verify it against the NumPy/C++ reference.*
 - That a Raspberry Pi Zero 2W can load weights, orchestrate
   inference, and read results via SPI in software that fits in
   a few hundred lines of C++ or Python.
-- That the iteration cycle is genuinely hours: change a part, repopulate,
-  measure.
+- **That one full training step — forward pass, gradient
+  computation, stochastic-rounded weight update through the
+  digital accumulator — executes cleanly on physical hardware.**
+  This is the piece that distinguishes this project from every
+  commercial analog-AI attempt.
+- That the iteration cycle is genuinely hours: change a part,
+  repopulate, measure.
 
 Stage 1 does *not* yet run a full transformer. Its output is
 **one row of a matrix multiplication** (one attention head's
-projection for one token). That is enough to prove the architecture.
+projection for one token), run both forward and backward. That is
+enough to prove the architecture is *trainable*, not just
+inferable — which is the whole point.
+
+Stage 1 assumes Stage 0 (the simulator viability gate, see
+`STAGE0.md`) has already passed. If it hasn't, do not fabricate
+this board. The Stage 1 BOM and time budget below are committed
+only after Stage 0 gives a `go`.
 
 ---
 
@@ -45,19 +57,39 @@ worth.
 
 ### On the tile PCB
 
+Stage 1 implements the Q8.8.8 bit-sliced architecture the
+Stage-0 simulator validated: **three digipots per weight** giving
+24-bit effective precision from 8-bit parts. BOM scales
+accordingly.
+
 | Part | Qty | Role | Unit cost | Notes |
 |---|---|---|---|---|
-| AD5270BRMZ-20 (or MCP4131-103) | 256 | One weight each | $1–$3 | Single-channel digipots. 256-step (MCP) or 1024-step (AD). SPI. |
-| TLV9002 (dual op-amp) | 16 | Summing amplifiers | $0.50 | SOIC-8. Rail-to-rail I/O. |
-| MCP4728 (quad 12-bit DAC) | 4 | Input voltage drivers | $3 | I²C. One for every 4 inputs. |
-| ADS1115 (4-ch 16-bit ADC) | 4 | Output readers | $4 | I²C. One for every 4 outputs. |
-| 1N4148 (signal diode) | 16 | Optional per-column rectifier / ReLU | $0.05 | Only if you want ReLU-style nonlinearity per-column. |
+| AD5270BRMZ-20 (or MCP4131-103) | **768** | **Three per weight (Q8.8.8 bit-slicing)** | $1–$3 | Single-channel digipots. 256-step (MCP) or 1024-step (AD). SPI. Organized in three planes: MSB, middle, LSB. Binary-weighted feedback at the summing op-amp sums the three planes with coefficients 1, 1/256, 1/65536. |
+| **AD8629 (dual autozero op-amp)** | **16** | **Summing amplifiers — autozero for 20+ bit path precision** | $2 | Replaces the generic TLV9002. Essential for exploiting the 24-bit weight precision. |
+| MCP4728 (quad 12-bit DAC) | 4 | Input voltage drivers | $3 | I²C. Also used for write-path dither injection during stochastic rounding. |
+| ADS1115 (4-ch 16-bit ADC) | 4 | Output readers | $4 | I²C. Oversampling recovers additional bits. |
+| **23LC1024 SRAM × 2** | **2** | **32-bit-wide gradient accumulator** | **$3 ea** | **Widened from 16-bit to 32-bit per weight. Two SRAMs chained on SPI, giving 256 KB total accumulator storage.** |
+| **AD5270BRMZ (reference)** | **8** | **Calibration reference cells** | $2 | Programmed to known values, read periodically for drift correction. ~3% overhead. |
+| 1N4148 (signal diode) | 16 | Per-column rectifier / ReLU | $0.05 | Analog ReLU without host round-trip. |
 | 2N3904 + 2N3906 matched pair | 8 | Optional differential-pair nonlinearity | $0.10 | For tanh/sigmoid-like transfer curves. |
-| 0.1 µF decoupling caps | ~50 | Every IC's power pins | $0.02 | Plus 10 µF bulk near the regulator. |
+| NTCG063JF103 thermistor | 1 | Per-tile temperature reference | $0.50 | Feeds the Pi-side calibration loop. |
+| 0.1 µF decoupling caps | ~100 | Every IC's power pins | $0.02 | Scale with BOM. Plus 10 µF bulk near the regulator. |
 | AMS1117-3.3 LDO regulator | 1 | Local 3.3 V rail | $0.30 | Fed from Pi's 5 V. |
 | 2×20 pin header (Pi hat) | 1 | Mates to Pi Zero 2W | $0.80 | Or JST cable if you don't want a hat. |
 
-Subtotal for tile: **roughly $60–$100**, depending on digipot choice.
+Subtotal for tile: **roughly $200–$300**, roughly 3× the cost of
+the naive Q8.8 version. Still well under $500 all-in for the
+first board.
+
+If that cost is the binding constraint in a given iteration, a
+Q8.8 (single-cell) variant is a valid "half-bill" prototype —
+you can etch the single-slice version in-house first to debug
+topology, then move to the Q8.8.8 pro-fab version once the
+single-slice topology is working. But the Gate-0 simulator
+passes *only* for the Q8.8.8 configuration; a single-cell build
+will not train at 96-block depths and is explicitly not a
+miniature of the scalable architecture. It is a stepping stone
+for your workflow, not a representative demonstration.
 
 If you want to reduce component count at the expense of dynamic
 range, you can use 8-channel digipots like the AD5204 (4 × 256-step
@@ -184,7 +216,7 @@ within 1–2% RMS across 1000 random test inputs.
 
 ---
 
-## Three Stage-1 experiments to run, in order
+## Four Stage-1 experiments to run, in order
 
 ### Experiment 1: "Does one column work?"
 
@@ -209,7 +241,50 @@ the 16 output values to the `Q[0][:]` vector a software MinAI
 produces.
 
 If this matches within 1–2%, **you have run MinAI's first matmul in
-analog hardware.** The rest of the project is scaling, not research.
+analog hardware.**
+
+### Experiment 4: "Does one full training step execute on the tile?"
+
+This is the experiment that distinguishes this project from every
+prior analog-AI hardware attempt.
+
+1. Load a set of starting weights (from a mid-training MinAI
+   checkpoint, where the gradients are non-trivial but training
+   has not converged) into the tile.
+2. Run one forward pass: input token → analog matmul → output
+   vector.
+3. Read the output via ADC; compute the expected gradient
+   digitally on the Pi (the book's C++ backward pass, limited to
+   one cell for this experiment).
+4. For each of the 256 weights, compute the SGD update. Accumulate
+   the update in the on-board SRAM (16-bit precision).
+5. For any accumulator crossing the digipot step threshold,
+   compute a stochastic-rounded write — ±1 tap with the
+   appropriate probability — and commit it to the analog cell.
+   Subtract the committed step from the accumulator.
+6. Run a second forward pass with the updated weights. Compare
+   the output vector against the software reference.
+
+**If the output moves in the direction gradient descent predicted,
+within the precision expected from the noise model**, Stage 1 is
+complete and you have demonstrated **the first training step of
+any analog AI system built outside a research lab**. That is the
+artifact on which the rest of the project stands.
+
+If it doesn't move the expected direction, the diagnostic is
+straightforward:
+
+- Wrong magnitude but right sign → scale the learning rate; the
+  gradient is being accumulated correctly but the commit is
+  saturating.
+- Right magnitude, wrong sign → sign error somewhere in the
+  write path or the gradient sign convention. Easy to find.
+- No motion at all → the accumulator is not crossing the threshold
+  (too-small gradients) or the write is not actually sticking (a
+  hardware fault). Probe the SPI and the digipot wipers.
+
+Reaching Experiment 4 cleanly is the condition for Stage 2 to
+begin.
 
 ---
 
@@ -226,15 +301,35 @@ analog hardware.** The rest of the project is scaling, not research.
 
 ---
 
-## A week of Stage 1, honestly
+## Two-plus weeks of Stage 1, honestly
 
-Day 1 — sketch the schematic in KiCad; lay out the board.
-Day 2 — order parts, send the board to fab.
-Day 3–4 — wait for fab; write the Pi-side weight-loader C++.
-Day 5 — parts and board arrive; populate one column (Experiment 1).
-Day 6 — populate the rest; run Experiment 2.
-Day 7 — run Experiment 3 against MinAI's trained Wq.
+The Q8.8.8 build has 3× the cell count and 3× the solder joints,
+so the cadence stretches accordingly. Assuming Stage 0 has
+already passed both gates.
 
-This is a week for someone with the tooling you described. It is
-three months for someone without it. That gap is the whole reason
-this side quest is even contemplatable.
+Day 1–2 — sketch the schematic in KiCad; lay out the 8-layer
+          board with careful stripline routing for the summing
+          buses; include the 32-bit SRAM, autozero op-amps, and
+          calibration reference cells.
+Day 3 — order parts, send the board to pro fab (expect 10-day
+          turnaround at JLCPCB/PCBWay 8-layer PCBA service).
+Day 4–10 — wait for fab; write the Pi-side weight-loader with
+          Q8.8.8 decomposition, the 32-bit accumulator manager,
+          stochastic-rounded write code per slice, and the
+          calibration-reference readout / correction loop.
+Day 11 — parts and board arrive; populate one column across all
+          three slices (Experiment 1, extended).
+Day 12 — populate the rest; run Experiment 2.
+Day 13 — run Experiment 3 against MinAI's trained Wq.
+Day 14 — run Experiment 4 (the training step).
+Day 15 — characterize tile noise across all three slices; update
+          the Stage-0 simulator's noise model with measured
+          values. Any discrepancy between simulated and measured
+          behavior triggers a deeper investigation before Stage 2.
+
+**Two to three focused weeks** for someone with the tooling you
+described, assuming you are willing to let a pro fab do the
+heavy PCBA work rather than soldering 800+ joints by hand. It
+is three-plus months for someone without pro-fab assembly. The
+pro-fab line item is therefore less optional at Stage 1 than it
+was in the naive Q8.8 version.
