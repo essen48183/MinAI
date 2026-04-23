@@ -71,7 +71,7 @@ rounding to resolve updates much finer than one tap.
 
 | Part | Qty | Role | Unit cost | Notes |
 |---|---|---|---|---|
-| AD5270BRMZ-20 (or MCP4131-103) | **768** | **Three per weight (Q8.8.8 bit-slicing)** | $1–$3 | Single-channel digipots. 256-step (MCP) or 1024-step (AD). SPI. Organized in three planes: MSB, middle, LSB. Binary-weighted feedback at the summing op-amp sums the three planes with coefficients 1, 1/256, 1/65536. |
+| **MCP4251-103E/P** (or -E/ML QFN) | **384** | **Three slices per weight (Q8.8.8 bit-slicing), two channels per package** | $1.01 | **Dual 8-bit SPI digipots, 10 kΩ, volatile RAM.** 257 taps (8-bit) per channel, 10 MHz SPI, 75 Ω wiper. Datasheet DS22060B. The dual packaging cuts chip count 2× vs single-channel parts, and — critically — the two channels on one die have **15 ppm/°C ratiometric tempco** (matched on-die). Route same-weight slice pairs (e.g., MSB + middle) onto the same package so the tightest-coupled ratio pair benefits from the on-die matching. Organized in three slice planes: MSB, middle, LSB. Binary-weighted feedback at the summing op-amp sums the three planes with coefficients 1, 1/256, 1/65536. Single-channel MCP4131 is an acceptable fallback at ~$0.70 but loses the ratiometric-matching benefit. |
 | **AD8629 (dual autozero op-amp)** | **16** | **Summing amplifiers — autozero for drift and 1/f stability** | $2 | Replaces the generic TLV9002. Chosen for its ≤ 1 µV Vos and near-zero drift over temperature. That drift stability — not the 24-bit ceiling — is what keeps per-MAC noise inside the 0.03 % standard-analog budget over a training run. A generic op-amp's thermal Vos drift alone would exceed that budget. |
 | MCP4728 (quad 12-bit DAC) | 4 | Input voltage drivers | $3 | I²C. Also used for write-path dither injection during stochastic rounding. |
 | ADS1115 (4-ch 16-bit ADC) | 4 | Output readers | $4 | I²C. Oversampling recovers additional bits. |
@@ -84,9 +84,12 @@ rounding to resolve updates much finer than one tap.
 | AMS1117-3.3 LDO regulator | 1 | Local 3.3 V rail | $0.30 | Fed from Pi's 5 V. |
 | 2×20 pin header (Pi hat) | 1 | Mates to Pi Zero 2W | $0.80 | Or JST cable if you don't want a hat. |
 
-Subtotal for tile: **roughly $200–$300**, roughly 3× the cost of
-the naive Q8.8 version. Still well under $500 all-in for the
-first board.
+Subtotal for tile with the MCP4251 digipot line: **roughly $500–$600**
+(digipots ~$390, op-amps ~$32, precision feedback/summing network,
+SRAM, DACs, ADCs, reference cells, passives, regulator, PCB fab).
+Higher than the original $200–$300 estimate, which was written before
+Stage 0 validated the Q8.8.8 bit-sliced architecture as the committed
+path. Still well under $1,000 all-in for the first board.
 
 If that cost is the binding constraint in a given iteration, a
 Q8.8 (single-cell) variant is a valid "half-bill" prototype —
@@ -346,9 +349,11 @@ begin.
 
 ## Two-plus weeks of Stage 1, honestly
 
-The Q8.8.8 build has 3× the cell count and 3× the solder joints,
-so the cadence stretches accordingly. Assuming Stage 0 has
-already passed both gates.
+The Q8.8.8 build has 3× the cell count of a naive Q8.8 design.
+Dual-channel MCP4251 packaging cuts the chip count back down to
+~1.5× (384 dual chips vs 256 single chips for Q8.8), so the
+cadence stretches less than it would with single-channel
+digipots. Stage 0 passed both gates; build cadence assumes that.
 
 Day 1–2 — sketch the schematic in KiCad; lay out the 8-layer
           board with careful stripline routing for the summing
@@ -372,7 +377,8 @@ Day 15 — characterize tile noise across all three slices; update
 
 **Two to three focused weeks** for someone with the tooling you
 described, assuming you are willing to let a pro fab do the
-heavy PCBA work rather than soldering 800+ joints by hand. It
-is three-plus months for someone without pro-fab assembly. The
-pro-fab line item is therefore less optional at Stage 1 than it
-was in the naive Q8.8 version.
+heavy PCBA work rather than soldering ~400 dual-channel digipot
+packages (≈ 3,200 pins) by hand. It is three-plus months for
+someone without pro-fab assembly. Dual-channel MCP4251 packaging
+roughly halves the joint count vs the single-channel line, but
+the density still argues for pro-fab PCBA at Stage 1.
