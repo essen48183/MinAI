@@ -1,0 +1,3 @@
+# Build artifact — regenerate with `make`.
+stage0_5
+*.o
