@@ -34,6 +34,15 @@ measured, which is often tighter than the numbers originally
 predicted and in one case (noise at depth) is unexpectedly
 looser.
 
+**Strongly recommended precursor: Stage 0.5** (see `STAGE0_5.md`).
+A 4×1 Q8.8 dot-product board, ~$80 all-in, that uses the same
+MCP4251 / AD8629 parts as Stage 1 in a one-summing-column
+miniature. Its job is to surface KiCad-and-fab mistakes on a
+$25 PCB rather than a $500 one. Skipping Stage 0.5 is allowed
+but every error you would have caught on the small board, you
+will catch on the big board, with longer fab cycles and more
+expensive populated parts.
+
 ---
 
 ## The tile shape: 16×16
