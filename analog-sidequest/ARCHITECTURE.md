@@ -10,35 +10,55 @@ legible in one sitting.*
 ## The big picture in one diagram
 
 ```
-  microSD card              (trained weights, like a hard disk)
+  microSD card                       (trained weights, like a hard disk)
         |
         v
-  Raspberry Pi Zero 2W      (host: tokenization, softmax, sampling)
-        |   (SPI / I2C / parallel GPIO)
+  Raspberry Pi Zero 2W               (host: weight loading at boot,
+        |                             tokenizer, generation-loop control)
+        |
+        |   1× DAC at start of each generation step
         v
-  +-----------------------------------------------+
-  |  Analog Tile Board                            |
-  |                                               |
-  |   DAC array (weight loader)                   |
-  |        |                                      |
-  |        v                                      |
-  |   Digital potentiometers  <-- the weights     |
-  |        |                                      |
-  |        v                                      |
-  |   Analog MAC network  (Ohm's law + Kirchhoff) |
-  |        |                                      |
-  |        v                                      |
-  |   Nonlinearity patch (diode / BJT / AD633)    |
-  |        |                                      |
-  |        v                                      |
-  |   ADC array (readout)                         |
-  |                                               |
-  +-----------------------------------------------+
-        |   (readings)
+  +---------------------------------------------------------+
+  |  Analog Tile Board — everything below stays at voltage  |
+  |                                                         |
+  |   Bit-sliced digital-potentiometer crossbars            |
+  |   (the weights, programmed once at boot)                |
+  |        |                                                |
+  |        v                                                |
+  |   Analog matmul network    (Ohm's law + Kirchhoff)      |
+  |        |                                                |
+  |        v                                                |
+  |   Analog residual adders   (summing op-amps)            |
+  |        |                                                |
+  |        v                                                |
+  |   Analog LayerNorm / RMSNorm stages                     |
+  |        |                                                |
+  |        v                                                |
+  |   Analog ReLU / GeLU       (diode / BJT)                |
+  |        |                                                |
+  |        v                                                |
+  |   ... repeat per transformer block ...                  |
+  |        |                                                |
+  |        v                                                |
+  |   Analog softmax           (diode-exp + summing node    |
+  |        |                    + translinear divider)      |
+  |        v                                                |
+  |   Analog sampler           (winner-take-all OR ramp-    |
+  |        |                    compare temperature/top-k)  |
+  +---------------------------------------------------------+
+        |
+        |   1× small ADC per generated token (5–7 bits — a token ID)
         v
-   Raspberry Pi Zero 2W      (applies softmax, samples token,
-                              feeds next prompt token back in)
+   Raspberry Pi Zero 2W              (receives token ID, appends to
+                                      prompt, loops back to DAC)
 ```
+
+**One DAC at the start of each generation step. One ADC at the end.
+Nothing between them leaves the analog domain.** Softmax does not
+round-trip to the host. Neither does sampling, neither does
+LayerNorm, neither does the nonlinearity. The host is a typewriter
+that types one token in and reads one token out per cycle; every
+piece of vector arithmetic happens on the board.
 
 ---
 
@@ -48,8 +68,8 @@ legible in one sitting.*
 |---|---|---|
 | Hard disk / SSD | **microSD on the Pi** | Holds trained weights at rest. Just a file. |
 | System RAM | **Pi's 512 MB DRAM** | Stages weights during boot. Runs the host's Python/C++ glue code. |
-| CPU | **Pi's ARM cores** | Tokenizes prompts, runs softmax, samples tokens, runs the generation loop. |
-| GPU | **The analog MAC tile board** | Does the expensive matmuls. The only new thing in this project. |
+| CPU | **Pi's ARM cores** | Tokenizes prompts, runs the generation loop, does EOS check. **Does not run softmax. Does not run sampling. Does not run any vector arithmetic in the inference path.** |
+| GPU | **The analog tile board (matmul + nonlinearity + LayerNorm + softmax + sampler)** | All of the inference work, from input embedding voltage to output token ID. The only new thing in this project. |
 | PCIe bus | **SPI/I²C link from Pi to board** | How the CPU talks to the accelerator. (In Stage 3, this really is PCIe.) |
 | GPU VRAM / HBM | **The digipot wiper state on the tile** | Holds weights during inference. Volatile — vanishes on power-off. |
 | GPU kernel upload | **Pi's boot script walks the weight file and clocks each value into the digipot register over SPI** | Same pattern as `cudaMemcpy`, just ending at a resistance instead of a RAM cell. |
@@ -58,6 +78,61 @@ The one-line summary: **every piece of this system has a direct
 counterpart in a normal GPU-based AI computer, except the matmul tile
 itself, which replaces a stack of floating-point multipliers with
 Ohm's law.**
+
+---
+
+## Architectural rule #1 — stay on the board
+
+Stated up front because it shapes every other decision in this
+document and overrides any per-stage convenience argument:
+
+> **Inside the inference path, every piece of arithmetic that *can*
+> happen in analog *does* happen in analog. The signal enters the
+> board once via DAC, leaves once via ADC, and never round-trips in
+> between.**
+
+Concretely: matmuls, residual adds, ReLU/GeLU/tanh, LayerNorm /
+RMSNorm, softmax, and sampling all live on the board. The host's
+work per generated token is reduced to the four irreducibly-digital
+operations: tokenize the prompt at start, drive one DAC at the
+start of each step, read one ADC token-ID at the end of each step,
+decide whether to keep generating.
+
+Why this rule and not "softmax is cheap, just do it on the host":
+
+1. **Energy.** Each ADC-DAC round-trip costs more energy than the
+   matmul that sits between them on small models. The whole pitch
+   of analog AI — 50–100× lower energy than GPU inference — only
+   holds if conversions are rare. One per token is rare; one per
+   layer is not. One per softmax is catastrophic on a long
+   generation.
+2. **Latency.** ADC settling at the precision we need (24+ bits,
+   delta-sigma) takes microseconds. The matmul itself takes tens
+   of nanoseconds. A round-trip per layer makes the analog speed
+   advantage disappear into the converters.
+3. **Precision.** Every ADC-DAC pair quantizes the signal twice. At
+   24 effective bits per pass, eight round-trips through a
+   transformer block stack drop the effective precision into the
+   teens — exactly the territory where digital quantization
+   research says training and inference start hurting. By keeping
+   the signal continuous through the block, the only quantization
+   is the boundary one at the output of the whole pipeline.
+4. **Architectural identity.** Once you go to the host for
+   softmax, you might as well go to the host for LayerNorm. Once
+   you do that, you might as well go for residual adds. The
+   product collapses into "a digital transformer with some analog
+   inside it" — which is exactly the failure mode this project
+   exists to avoid. The discipline of "everything on the board"
+   keeps the architecture honest.
+
+The 1970s-1990s analog-computing literature has stock primitives for
+every operation in a transformer's inference path. Diode-exp,
+translinear divide, BJT differential-pair tanh, summing-node mean,
+squaring multiplier, square-root cell. All of them are two- to
+four-transistor circuits. None of them is novel. The only reason
+to do any of these on the host is reflex — the reflex of an
+engineer who learned to think of the host as the place where
+"messy" math happens. We are unlearning that reflex.
 
 ---
 
@@ -146,16 +221,24 @@ is worth spelling out because it is the answer to the question
 4. The board is now "programmed." Each digipot wiper sits at the
    position that corresponds to one trained weight.
 
-5. Pi sends an input token as a vector of N analog voltages (via its
-   onboard DAC or via one of the DAC chips on the tile).
+5. Pi looks up the embedding row for the input token in its DRAM
+   weight table; clocks the row's values out via the input DAC as
+   N analog voltages on the board.
 
-6. The tile does the matmul in hardware. Op-amp outputs settle within
-   a few hundred nanoseconds.
+6. The signal traverses the entire on-board transformer pipeline at
+   analog voltage levels: per block — Wq/Wk/Wv tiles, Q·Kᵀ, attn·V,
+   residual adders, LayerNorm stage, W1, ReLU, W2, residual.
+   Then the final LN, the Wout tile, the analog softmax (diode-exp +
+   translinear divider), and the analog sampler. **No ADC, no DAC,
+   no digital arithmetic inside this pipeline.** Op-amps settle in
+   tens of nanoseconds per stage.
 
-7. Pi reads the output currents through the ADC. Applies softmax
-   digitally (cheap). Samples the next token.
+7. The on-board sampler emits a token ID (a small integer between 0
+   and the vocabulary size). One small ADC (5–7 bits) reads that
+   integer back to the Pi.
 
-8. Pi sends the new token back as the next input vector. GOTO 6.
+8. Pi appends the received token to the prompt; loops back to step 5
+   for the next generation step.
 
 9. Power off. Digipot state vanishes. Trained weights are still safe
    on the microSD card, ready for the next boot.
@@ -163,7 +246,10 @@ is worth spelling out because it is the answer to the question
 
 The boot is identical in spirit to loading a CUDA kernel from disk to
 VRAM. The only change is that the final destination is an analog
-resistance rather than a digital register.
+resistance rather than a digital register. The generation loop is
+much smaller than a GPU equivalent: the Pi's per-token work is "look
+up an embedding, drive a DAC, read a token ID, decide whether to
+stop." Everything else lives in physics.
 
 ---
 
@@ -641,44 +727,67 @@ the components.
 
 ### What precision the noise budget actually delivers
 
-Stack every noise mitigation against each source, and the
-effective precision on each piece of the path looks like:
+The architecture has two precision numbers, and conflating them
+hides the engineering trade. Both are now measured by Stage 0
+rather than estimated.
 
-- **Forward matmul** (Q8.8.8 bit-sliced cells, autozero summing
-  op-amps, precision thin-film resistors): **22–26 effective bits.**
-  The matmul itself is Kirchhoff summation and Ohm's-law
-  multiplication — exact physics. The limit is the noise on the
-  summing node and the ADC at the readout.
-- **Weight writes** (Q8.8.8 with stochastic rounding): **nominal
-  24 bits, effectively 20+ bits** across many updates once
-  stochastic rounding averages out the quantization.
-- **Gradient accumulation** (32-bit digital SRAM): no
-  architectural ceiling. The digital accumulator is the one place
-  we deliberately use digital, because bookkeeping is digital's
-  strong suit and analog storage is not.
-- **Nonlinearities** (diode `exp`, translinear `sqrt` and
-  divide, BJT differential pair `tanh`): **exact analog physics,
-  no representation error at all.** The only limit is the noise
-  on the individual component. These are the operations where
-  analog is *more* accurate than float32 digital.
-- **Op-amp summing path**: **>20 effective bits** with commercial
-  autozero parts, better with more expensive precision op-amps.
-- **ADC readout at the output boundary**: **28–30 effective bits**
-  using a commercial delta-sigma part (ADS1262 or equivalent).
+**Quantization ceiling** (Q8.8.8 representation, zero noise):
+**23.3 effective bits.** This is the upper bound — what the
+architecture would deliver if every noise source were driven to
+zero. It is set by the bit-sliced cell count.
 
-**Total effective training precision across the full loop:
-~22–26 bits.** This is better than float32 (23-bit mantissa) on
-the operations where analog is naturally exact, and within a few
-bits of float32 on the others. It is substantially better than
-any commercial analog AI chip has shipped, because previous
-attempts (a) targeted inference-only, and so had no reason to
-push precision this hard, and (b) targeted low-cost die sizes
-that could not afford the precision components.
+**Effective precision at operating noise** depends on how much
+noise the BOM allows:
 
-This precision budget is well in excess of what 96-layer
-transformer training needs. IBM's published analog-training
-results at 18–20 effective bits already handle networks at
-commercial depth. Ours sits above that floor.
+| Noise regime          | σ per-MAC | Effective bits | Use         |
+|-----------------------|-----------|----------------|-------------|
+| Zero noise (ceiling)  | 0         | **23.3**       | theoretical |
+| Precision analog      | 3 × 10⁻⁵  | **14.3**       | aspirational|
+| Standard analog (target) | 3 × 10⁻⁴ | **11.0**     | Stage 1 BOM |
+| Hobbyist analog       | 3 × 10⁻³  | **7.7**        | bottom edge |
+
+The Stage 1 BOM commits to the standard-analog regime: 11 effective
+bits per MAC. That is **above** the 8-bit training floor IBM's
+phase-change memory work hit (Nandakumar 2020, Le Gallo 2023), and
+**well above** the int8 inference quality bar modern LLMs already
+serve at. It is below float32's 23-bit mantissa, which is why
+models retrain with measured tile noise injected — same approach
+as int8 quantization-aware training, just with a different noise
+distribution.
+
+Component-by-component contributions to the noise budget the
+11 bits comes out of:
+
+- **Forward matmul (Kirchhoff + Ohm)**: exact physics, no
+  representation error. The 11-bit limit is the noise on the
+  summing node, not the matmul itself.
+- **Weight writes (Q8.8.8 with stochastic rounding)**: 24-bit
+  nominal, ~20-bit effective once stochastic rounding averages out
+  the quantization across many updates.
+- **Gradient accumulation (32-bit digital SRAM)**: no ceiling. The
+  one place we deliberately use digital, because bookkeeping is
+  digital's strong suit.
+- **Nonlinearities (diode `exp`, translinear `sqrt` / divide, BJT
+  differential pair `tanh`)**: exact analog physics, no
+  representation error. The only limit is component noise. These
+  are the operations where analog is *more* accurate than
+  float32 digital.
+- **Op-amp summing path (autozero AD8629)**: > 20 effective bits.
+  This is the headroom that makes the 11-bit overall noise budget
+  achievable; without autozero it would be ~12 bits and the rest
+  of the budget would have nowhere to go.
+- **ADC readout at the boundary (delta-sigma)**: 28–30 effective
+  bits. Far above what we need; the boundary ADC is not the
+  bottleneck.
+
+**Bottom line:** 11 bits per MAC is what the Stage 1 hardware
+delivers, and Stage 0 verified that's enough for MaxAI to train
+end-to-end and for the same architecture to train at 96-block
+depth. The noise budget is set by the summing-node noise floor,
+not the bit-slice ceiling — which means going from Q8.8.8 to
+Q8.8.8.8 (more slices) buys nothing as long as we're at this
+noise level. Reducing noise (precision analog parts → 14 bits)
+is the path to more bits, not adding slices.
 
 The Stage 0 simulator validates the claim before any silicon is
 committed. Gate 1 verifies MaxAI (2 blocks) trains. Gate 2
@@ -715,43 +824,46 @@ calibrated tile precision. The same tricks that fail at 96-layer
 GPT-3 depth (where each layer's noise compounds) work fine at
 MaxAI's 2-block depth. Smallness, again, is the superpower.
 
-### The viability gate — now tests scaling to 96 blocks
+### The viability gate — both gates passed (Stage 0 is done)
 
-**This architecture has a hard pre-hardware gate.** Stage 0 is a
+**This architecture had a hard pre-hardware gate.** Stage 0 was a
 C++ simulator of the analog tile with realistic noise (Q8.8.8 bit-
 slicing, autozero summing, 32-bit accumulator, calibration cells)
-and all nine tricks implemented. Its job is two-fold:
+and all nine tricks implemented. Both gates have now passed; the
+architecture is cleared to fabricate. See `STAGE1_GONOGO.md` for
+the formal verdict and full results.
 
-1. **Functional gate:** MaxAI (2 blocks) must train to
-   recognizable-English output at simulated hardware precision.
-   If this fails, the architecture cannot train at all and the
-   project stops.
-2. **Scaling gate:** MaxAI architecturally scaled to **96 blocks**
-   (same structure, deeper stack, same precision per layer) must
-   also train to recognizable output. If this passes, the
-   architecture is provably GPT-depth-capable in principle — even
-   though we will only physically build the 2-block version.
-   If this fails, the architecture has a compound-error problem
-   that more layers cannot survive, and either the precision
-   stack needs more tricks or the project's scaling claim is
-   retracted.
+1. **Functional gate (passed):** Full MaxAI transformer (2 blocks)
+   trained end-to-end at four noise levels — clean float32, σ =
+   3 × 10⁻⁵ (precision analog), σ = 3 × 10⁻⁴ (standard analog,
+   PCB target), σ = 3 × 10⁻³ (hobbyist analog). All four runs
+   converged to a final loss in the 0.06–0.10 range and produced
+   the identical correct generation `"by the sea shore the shells
+   she sells are"` from the prompt `"she sells "`.
+2. **Scaling gate (passed):** Same architecture at 96-block depth
+   (GPT-3 layer count) trains cleanly at the standard-analog noise
+   target. Loss stays in the 0.05–0.07 band from 2 blocks through
+   96 blocks — no destructive compounding with depth.
 
-Passing both gates means: **the 2-block MaxAI hardware we build
-is a direct miniature of a GPT-depth architecture that would work
-at the same per-layer precision, differing only in cell count.**
-The hardware demo is not a toy; it is a concrete slice of a
-scalable design.
+The Stage 0 surprise: at 96 blocks, the clean float32 baseline
+ends at loss 0.22 while all three noisy runs land at 0.05–0.08.
+The stochastic-rounded weight writes plus Gaussian matmul noise
+behave like gradient noise / dropout — analog noise is a
+*regularizer* at depth, not a tax. This was not designed for; it
+fell out of the simulator. It implies the architecture is more
+forgiving than the noise budget assumes.
 
-Failing the scaling gate is informative, not fatal. It means we
-either (a) add more hardware precision tricks to the simulator and
-retest, (b) retain the architecture as "small-model only" and
-drop the GPT-scaling claim from the pitch, or (c) stop the
-project. Any of those is a legitimate outcome. The important
-thing is that we find out in software, before silicon, which
-one is true.
+Passing both gates means: **the 2-block MaxAI hardware Stage 1
+will build is a direct miniature of a GPT-depth architecture that
+trains at the same per-layer precision, differing only in cell
+count.** The hardware demo is not a toy; it is a concrete slice
+of a measured-scalable design.
 
-See `STAGE0.md` for simulator scope, noise model, and pass
-criteria.
+The Stage 1 noise budget is now locked at σ ≤ 3 × 10⁻⁴ per-MAC
+(0.03 % of full scale), which the BOM hits with comfortable
+margin. See `STAGE0.md` for the simulator scope, `STAGE0_5.md`
+for the bring-up board, `STAGE1.md` for the BOM, and
+`STAGE1_GONOGO.md` for the gate-pass writeup.
 
 ---
 
@@ -808,13 +920,15 @@ small. One non-obvious worry dominates everything else.
    from reaching frontier-scale model sizes; there is only tapeout
    cost and manufacturing complexity, which are the same constraints
    the GPU industry has already solved a dozen times.
-3. **Precision per MAC (~6–8 effective bits).** Real, but mostly
-   solved. Modern LLMs are routinely served at int8 or int4 with
-   minor quality loss; the quantization-aware-training tooling built
-   for phone-class inference hardware applies directly. Models
-   explicitly targeted at analog deployment retrain with measured
-   tile noise injected during training and match or exceed int8
-   software quality.
+3. **Precision per MAC** — measured, not modeled. Stage 0's 10,000-
+   trial sweep landed at **23.3 effective bits at the quantization
+   ceiling, 14.3 bits at precision-analog noise, 11.0 bits at the
+   standard-analog PCB target, and 7.7 bits at hobbyist-analog
+   noise** (`STAGE0_5.md`'s Experiment 2 will confirm those numbers
+   on actual silicon). The committed Stage 1 target is the 11-bit
+   standard-analog regime, which is well above the ~8-bit training
+   floor IBM published for analog training and well above the int8
+   inference quality bar modern LLMs already serve at.
 4. **Speed per matmul** — *not* a limit. Analog MACs settle in tens
    of nanoseconds (op-amp slew-rate limited). Digital GPUs do the
    equivalent in comparable wall time but burn 10–100× the energy.
@@ -879,24 +993,47 @@ up a cloud GPU. That is the bet.
 
 ---
 
-## What could go wrong (honest list)
+## What could go wrong (honest list, post-Stage-0)
 
-1. **Noise accumulation.** Every analog stage adds its own thermal
-   noise. A deep network may not survive without analog calibration
-   or per-layer ADC/DAC reset.
-2. **Digipot bandwidth.** Classic digipots are slow to rewrite
-   (kilohertz range). Fine for "load at boot, hold for inference" but
-   a bottleneck if you want fast weight updates. Matches our model.
-3. **Op-amp saturation.** If any intermediate matmul overshoots the
-   supply rails, the whole chain clips. Weight normalization during
-   training matters.
-4. **Nonlinearity mismatch.** A diode ReLU is not a perfect ReLU.
-   Training has to bake in the measured transfer function.
-5. **Yield.** A hand-built tile has 0.1% component tolerance-level
-   issues. Per-tile calibration will be needed after every assembly.
+1. **Noise accumulation at depth.** This was the worry going in.
+   Stage 0's Gate 2 disproved it — at 96 blocks the noisy runs
+   actually outperform the clean float32 baseline because analog
+   noise regularizes deep training. So this is no longer the top
+   risk. **The residual risk is hardware that doesn't match the
+   sim's Gaussian noise model**: real digipots, real op-amps, real
+   PCB layout might have a non-Gaussian or correlated noise term
+   the simulator didn't capture. Stage 0.5 measures this on a $25
+   board before Stage 1 commits.
+2. **Digipot write speed during training.** Volatile MCP4251s rewrite
+   at SPI rates (5–10 MHz, ~1 µs per wiper). Fine for SGD steps at
+   the cadence Stage 1 needs (training step on the order of
+   milliseconds). NV digipots would be slower per write *and* have
+   limited write endurance — that's why we're committed to volatile
+   for the training board.
+3. **Op-amp saturation at intermediate stages.** If any matmul or
+   summing stage overshoots the supply rails, the chain clips and
+   the tail of the pipeline goes nonsensical. Weight initialization
+   and per-layer scaling discipline matter. Software trick: train
+   with output-magnitude-aware regularization on the weights (the
+   simulator already does this implicitly).
+4. **Nonlinearity transfer-function drift.** A diode ReLU's transfer
+   curve shifts ~2 mV/°C with temperature. Training that bakes in
+   a fixed transfer function will misbehave on a board running 10°C
+   off the bench condition. Per-tile thermistor + calibration loop
+   in Stage 2 onwards; for Stage 1, hold the bench at room temp.
+5. **Yield and component matching.** A hand-built tile has
+   0.01–0.1 % component-tolerance-level dispersion. Calibration
+   reference cells absorb most of it. The MCP4251 dual-channel
+   choice (15 ppm/°C ratiometric on-die tempco) absorbs more.
+   Per-tile calibration after assembly remains required.
+6. **PCB layout discipline.** Mixed-signal layout is its own skill
+   and the first board will have layout mistakes. **This is what
+   Stage 0.5 exists to surface on a $25 board** rather than a $500
+   one. See `STAGE0_5.md`.
 
 None of these is a reason not to build. All of them are reasons the
-Stage-1 experiments are to measure them before committing to Stage 2.
+Stage 0.5 and Stage 1 experiments are designed to measure them
+before committing to Stage 2.
 
 ---
 
@@ -904,25 +1041,33 @@ Stage-1 experiments are to measure them before committing to Stage 2.
 
 - **Dynamic topology.** The tile size is fixed. Larger models tile
   up; they do not reconfigure the cells.
-- **Full float-32 numerics.** We accept the ~10–12 effective bits of
-  end-to-end precision the five-trick stack gives us. Models are
-  retrained with injected tile noise to match. We do not pretend
-  to reach fp32 on analog hardware.
-- **GPT-scale depth.** Accumulated analog noise across hundreds of
-  layers is genuinely fatal. We target the 1–8 block depth range
-  where the five tricks keep training stable. MinAI (1 block) and
-  MaxAI (2 blocks) live comfortably here. Scaling to 96-block
-  models requires device-level improvements (RRAM crosspoints,
-  on-chip calibration) that silicon can address and PCB cannot.
+- **Full float-32 numerics on every operation.** Stage 0 measured
+  11.0 effective bits at the standard-analog noise target — well
+  above the 8-bit training floor and the int8 inference quality
+  bar, but not float32. Models retrain with injected tile noise to
+  match. We do not pretend to reach fp32 across the whole pipeline.
+- **Round-trip the signal to digital mid-pipeline.** This is the
+  rule from "Architectural rule #1" above, repeated here as a
+  non-design: no digital softmax, no digital LayerNorm, no digital
+  residual add, no digital nonlinearity in the inference loop.
+  One DAC at start, one ADC at end, no exceptions for "convenience."
 
-### What we explicitly do do — correcting the prior draft
+### What we explicitly do do — corrections to earlier drafts
 
-- **Training on the analog hardware IS in scope.** See the
-  "Analog training" section above for why, and the Stage 0
-  simulator viability gate for how we verify this is realistic
-  before fabricating anything. The prior framing of "train
-  digital, deploy analog" was the Mythic framing, and it is the
-  failure mode this project exists to avoid.
+- **Training on the analog hardware IS in scope.** Stage 0's Gate 1
+  proved it works at standard-analog noise; the analog-architecture
+  trains MaxAI to identical correct output across four orders of
+  magnitude of per-MAC noise. The prior framing of "train digital,
+  deploy analog" was the Mythic framing, and it is the failure
+  mode this project exists to avoid.
+- **GPT-depth scaling IS in scope, in principle.** Stage 0's Gate 2
+  trained the same architecture at 96 blocks (GPT-3 layer count) at
+  standard-analog noise without accuracy degradation — and the
+  noise actually helps at depth via regularization. The earlier
+  hedge that "accumulated analog noise across hundreds of layers
+  is fatal" was wrong; the simulator empirically refuted it. The
+  physical hardware we build is still 2 blocks for cost reasons,
+  but the architecture is provably scalable.
 - **Temperature compensation IS on the board** from Stage 2
   onward. A thermistor per tile plus a host-side calibration loop
   retrains the per-cell correction tables every few seconds during
