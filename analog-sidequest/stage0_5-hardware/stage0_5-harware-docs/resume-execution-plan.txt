@@ -1,0 +1,115 @@
+# Resume Execution Plan — 4x1 Q8.8.8 Analog MAC Tile
+
+## Objective
+Resume and complete the partially implemented mixed-signal PCB while preserving the intended architectural mapping:
+- U1–U4 each own one channel's matched MSB+MID Q8.8 pair
+- U5–U6 carry the four per-channel LSB slices
+- maintain ratio-matching intent inside each MCP4251 package
+- preserve forward scalability toward a future 16-branch SPI-controlled architecture
+- prefer JLCPCB-compatible pick-and-place parts where practical
+- also prepare a parallel DigiKey/self-solder BOM path
+
+## Current project snapshot
+- Schematic summary: 365 schematic items / 48 nets
+- Main active BOM population: 63 part instances across 10 unique BOM entries
+- 6x MCP4251 digipots already present (U1–U6)
+- 3x OPA2333, 1x MCP4728, 1x ADS1115, 1x SN74HC138, 1x AMS1117-3.3, 1x ferrite bead, 1x 2x20 host header
+- Board already configured as 50 mm x 50 mm, 4-layer
+- Layout contains 71 footprints / 8 test points / partial placement
+- Review status: no missing footprints, ERC categories currently clean, but DRC reports 127 airwires
+- Layout density: raw fill acceptable, routing-aware density currently tight enough to require placement/routing review
+
+## Phase 1 — Freeze architecture and channel/package ownership
+1. Create a channel-to-package allocation table for all four channels.
+2. Explicitly bind each channel's MSB and MID slices to one of U1, U2, U3, U4.
+3. Explicitly bind each channel's LSB slice to U5/U6 with one slice per channel.
+4. Rename or annotate nets/properties so channel ownership is visible in the schematic and later scalable to 16 branches.
+5. Verify that no existing partial wiring violates same-package MSB/MID pairing.
+
+### Deliverables
+- channel allocation matrix
+- package ownership notes on U1–U6
+- unambiguous naming convention for channel, slice, and chip-select structure
+
+## Phase 2 — Schematic completion and signal-ownership cleanup
+1. Audit U1–U6 pin usage against the required channel map.
+2. Finish incomplete analog signal paths from DAC outputs through digipot slices into the summing stages.
+3. Finish digital control wiring for SPI, decoder outputs, shutdown/write-protect defaults, and test hooks.
+4. Standardize AGND/DGND/A3V3/D3V3 intent and confirm split/bridge strategy remains consistent.
+5. Replace ambiguous temporary net names with architecture-oriented names where helpful.
+6. Verify test points cover bring-up of supply rails, VCM, partial sums, and final output.
+
+### Exit criteria
+- every slice has a defined owner, source input, summing destination, and control path
+- no unresolved architectural ambiguity in U1–U6 mapping
+- schematic review shows no unintended orphaned analog paths
+
+## Phase 3 — BOM refinement in dual tracks
+### Track A: JLCPCB assembly-oriented BOM
+1. Convert generic passives to concrete JLC-friendly LCSC/JLC part numbers where performance allows.
+2. Confirm which current ICs already have acceptable LCSC/JLC availability and assembly class.
+3. Prefer package consistency and reel-friendly passives for assembly yield.
+4. Flag any unavoidable extended/basic part tradeoffs.
+
+### Track B: DigiKey / self-solder BOM
+1. Create alternates for parts that are JLC-limited, high-risk, or hard to hand-assemble.
+2. Prefer packages and sourcing with better hobby/lab availability where self-soldering is the goal.
+3. Document approved alternates without changing the architectural pinout unless necessary.
+4. Keep one-to-one mapping between the assembly BOM and alternate BOM so either build path preserves channel/package ownership.
+
+### Immediate BOM focus areas
+- 28 generic resistors need concrete sourcing definition
+- 20 generic capacitors need concrete sourcing definition
+- confirm regulator, op-amp, DAC, ADC, and connector sourcing strategy against both build paths
+
+## Phase 4 — Placement review around the analog architecture
+1. Review whether physical placement mirrors the logical channel partitioning.
+2. Keep each channel's MSB/MID digipot package and associated analog nodes locally grouped.
+3. Place U5/U6 to minimize LSB trace imbalance and avoid unnecessary crossings into the summing region.
+4. Re-check op-amp, DAC, ADC, regulator, ferrite bead, and connector adjacency relative to analog and digital domains.
+5. Confirm test points remain probe-accessible after final routing.
+6. Re-evaluate whether 50x50 mm remains appropriate after routing congestion is considered.
+
+### Placement priorities
+- shortest, most symmetric analog paths first
+- clean separation between digital SPI/control and sensitive analog summing nodes
+- accessible connector edge, regulator input path, and test points
+
+## Phase 5 — Routing completion and board-level cleanup
+1. Route power and ground intent first, then SPI/I2C/control, then sensitive analog paths.
+2. Resolve the current airwire backlog systematically by functional block.
+3. Keep summing-node parasitics controlled and avoid digital trace coupling into VCM and weighted-sum nodes.
+4. Use the 4-layer stackup deliberately for return paths and quiet analog reference behavior.
+5. Review whether any bottom-side passives or local re-placement would materially reduce congestion.
+
+### Exit criteria
+- airwires reduced to zero
+- no routing shortcuts that break future channel replication patterns
+- analog reference and summing regions remain compact and quiet
+
+## Phase 6 — Manufacturability and bring-up readiness
+1. Run ERC/DRC/manufacturability checks after schematic and again after routing completion.
+2. Confirm footprints, orientation, polarity, and hand-assembly practicality for the alternate BOM.
+3. Check connector accessibility, test point spacing, and probe usability.
+4. Validate JLC-compatible package choices and generate assembly outputs once sourcing stabilizes.
+5. Prepare bring-up checklist for rails, DAC outputs, VCM, MSB/MID/LSB partial sums, and OUT_SUM/V_OUT.
+
+## Phase 7 — Scalability hygiene for the future 16-branch system
+1. Preserve replicable naming for channels, chip-selects, and weighted-sum nodes.
+2. Avoid one-off placement or net naming that cannot scale to more branches.
+3. Keep decoder / SPI control assumptions explicit so expansion to a larger addressed fabric is straightforward.
+4. Record what is tile-local vs system-level so the 4x1 board stays a reusable building block.
+
+## Recommended working order for the next session
+1. Verify and lock the U1–U6 channel ownership map
+2. Audit/repair any partial schematic wiring that violates the new pairing rule
+3. Convert generic passives into sourced BOM candidates in JLC-first form
+4. Generate the alternate DigiKey/self-solder sourcing list
+5. Review and tighten placement around the analog signal chain
+6. Finish routing and clear airwires
+7. Run final manufacturability and review passes
+
+## Notes from current inspection
+- Present digipot connectivity already suggests channelized analog input grouping, but ownership should be made explicit before further edits.
+- The board is not obviously oversized, but routing-aware density is high enough that placement optimization matters.
+- Because ERC is presently clean while airwires remain high, the main continuation risk is incomplete implementation rather than basic schematic legality.

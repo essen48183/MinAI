@@ -1,0 +1,83 @@
+# Design Notes
+
+## Architecture
+- Target function: 4x1 weighted analog MAC tile with four DAC-generated input voltages and one analog output.
+- Weight format: each of the four weights is split into **MSB**, **MID**, and **LSB** 8-bit slices.
+- Weight hardware: **6x MCP4251-103E-SL** dual digital potentiometers provide the 12 programmable slice elements.
+- SPI chip-select expansion: **SN74HC138PWR** decodes three GPIO address bits into six active-low chip selects for the digipots.
+- Data conversion: **MCP4728A0T-E/UN** generates the four analog input voltages over I2C; **ADS1115IDGSR** digitizes the output for readback and bring-up.
+- Host interface: Raspberry Pi Zero 2W 2x20 header carries 5V, ground, SPI, I2C, and decoder-address GPIO.
+
+## Key Electrical Decisions
+- Use a buffered **VCM = 1.65V** midrail reference so the analog weighting and summing stages can operate on a single 3.3V analog supply.
+- Connect each digipot slice between its DAC input voltage and VCM; each wiper generates a programmable interpolation between VCM and the corresponding input.
+- Implement three slice-summing amplifiers around VCM: **V_MSB**, **V_MID**, and **V_LSB**.
+- Implement two cascaded combiner stages so the final analog result follows the required practical scaling:
+  - first combiner realizes **V_LOW = V_MID + V_LSB / 256**
+  - second combiner realizes **V_OUT = V_MSB + V_LOW / 256**
+- Route the ADS1115 so it can read **V_OUT** and **VCM** for signed or offset-compensated bring-up measurements.
+
+## Power and Grounding
+- Source 5V from the Pi header.
+- Regulate to 3.3V with **AMS1117-3.3**.
+- Split into **DGND/D3V3** and **AGND/A3V3** domains using a filtered analog branch from the regulator output.
+- Join **AGND** and **DGND** at a single star point implemented adjacent to the Pi header using a 0 ohm net-tie resistor.
+
+## Layout Intent
+- Board target: approximately **50 mm x 50 mm** where practical, recognizing that the 2x20 Pi header is the dominant mechanical driver.
+- Stackup target: **4 layers**.
+- Functional grouping: Pi header + digital control on one side, analog summing/DAC/ADC/op-amps on the other side.
+- Keep analog summing nodes short, guard them with solid ground reference, and keep the decoder/SPI routing away from the high-impedance analog nodes.
+
+## Bring-Up Notes
+- Add **4.7k** I2C pull-ups on SDA and SCL.
+- Add **10k** pull-up on shared digipot MISO/SDO.
+- Use multiple Pi ground pins on the header.
+- Default decoder enables should leave all digipot chip selects inactive during reset.
+- Debug access is exposed on **TP1=VCM**, **TP2=V_OUT**, **TP3=V_LOW**, **TP4=V_LSB**, **TP5=A3V3**, **TP6=D3V3**, **TP7=AGND**, and **TP8=DGND**.
+
+## Weighting Network Validation
+- The slice-summing stages use **10k** feedback resistors and **40k** per-slice input resistors.
+- Therefore each slice summer has magnitude gain **10k / 40k = 1/4** for each contributing digipot wiper.
+- The binary-scaling stages use **10k** feedback resistors and **2.56M** scaling resistors.
+- Therefore each scaling leg has magnitude factor **10k / 2.56M = 1/256 = 0.00390625**.
+- Cascading the binary-scaling factor twice gives **1 / 256^2 = 1 / 65536 = 0.0000152587890625**.
+- Implemented magnitude equations:
+  - **|V_LOW contribution| = |V_MID| + |V_LSB| / 256**
+  - **|V_OUT contribution| = |V_MSB| + |V_LOW| / 256 = |V_MSB| + |V_MID| / 256 + |V_LSB| / 65536**
+- Sign about **VCM** depends on the inverting stages and pot orientation, but the weighting magnitudes match the intended **Q8.8.8** cascade.
+
+## Precision Resistor Sourcing Strategy
+- **R12-R23** stay at **40k**, **0603**, **0.1%**, thin-film.
+- Preferred self-solder / DigiKey track MPN for **R12-R23**: **Vishay Dale Thin Film PAT0603E4002BST1**.
+- **R24-R25** stay at **2.56M**, **0603**, **0.1%**, thin-film for the exact 1:256 scaling math.
+- Preferred self-solder / precision track MPN for **R24-R25** is currently recorded as **Vishay Dale Thin Film PAT0603E2564BST1** and should be treated as a **provisional exact-value source** until distributor verification is completed.
+- Because an exact LCSC/JLC placement equivalent has not been verified for the precision network, **R12-R25 are excluded from JLC pick-and-place by default** and should be hand-installed for the precision build.
+- This preserves the exact schematic ratios while still allowing the rest of the assembly to follow a JLC-first flow.
+
+## PCB Constraint Defaults
+- Keep the existing **4-layer** stackup.
+- Use **Layer 2** as a continuous ground reference plane.
+- Reserve **Layer 3** primarily for power distribution, with care to avoid splitting return paths under sensitive analog routing.
+- Default manufacturable rules for prototype build:
+  - minimum trace width: **0.15 mm**
+  - preferred signal trace width: **0.20 mm**
+  - preferred power trace width: **0.30 mm**
+  - minimum clearance: **0.15 mm**
+  - minimum drill: **0.20 mm**
+- Keep digital traces away from **VCM**, **MSB_SUM**, **MID_SUM**, **LSB_SUM**, **LOW_SUM**, and **OUT_SUM**.
+- Preserve the single-point **AGND-DGND** tie only at **R28**.
+
+## Implementation Plan Update
+1. **Lock prototype scope and success criteria**: define this board as a single experimental MAC branch that is representative of **1 of 16 future channels**, with requirements centered on validating analog LLM inference theory, measurement accuracy, repeatability, and practical controllability at low prototype cost.
+2. **Capture scaling requirements now**: document the architectural assumptions needed for straightforward expansion to **16 channels** on the same SPI-centric control scheme, including shared-bus expectations, addressing/resource budgeting, channel identity, reserved expansion hooks, and any top-level interfaces that should remain consistent across replicas.
+3. **Freeze block-level partitioning and interfaces**: describe the design only at a functional level — analog MAC branch, programmable weight elements, data-conversion path, digital control path, and separate analog/digital 3.3V power domains — so the single-channel implementation stays aligned with a future multi-channel system.
+4. **Set platform and integration constraints**: record non-circuit requirements for a compact **4-layer PCB**, clean analog/digital separation, debug and measurement access, and a layout/topology approach that supports later replication into a denser 16-channel assembly without forcing a full multi-channel build today.
+5. **Define the decision gate for scaling**: use the single-branch board to generate evidence on achievable inference accuracy, calibration burden, noise/error sensitivity, and control complexity, then use those results to decide whether the architecture should be replicated directly, revised, or abandoned before investing in a much larger digipot count.
+
+## Execution Plan Revision — Resume From Partial State
+1. **Finish the schematic around the already-chosen architecture**: complete the remaining interconnects for the split 3.3V analog/digital rails, SPI decoder plus digipot bus, I2C DAC/ADC bus, VCM generation, and the core signal path so the tile is electrically complete without changing the intended MAC topology.
+2. **Close out the analog compute chain and observability hooks**: wire and verify the slice summing amplifiers, the cascaded 1:256 combiner stages, and the ADC/test access points so the full weighted-MAC signal path can be exercised, measured, and debugged on the first prototype.
+3. **Preserve forward-scaling structure while finishing the prototype**: keep the intentional architectural extras that rehearse a future 16-branch system — including bus organization, partitioning, and expansion-friendly interfaces — while constraining the current implementation to a practical single-tile board.
+4. **Set up and execute the mixed-signal PCB implementation**: configure a compact roughly **50 mm x 50 mm**, **4-layer** board with clear analog/digital separation, a star-ground tie near the Pi header, then place the Pi/digital control, converters, op-amps, and sensitive analog nodes according to that partitioning before routing.
+5. **Complete layout review and convergence**: finish routing with mixed-signal priorities in mind, run design and rule reviews, and resolve remaining schematic/layout issues until the board is ready for the next handoff toward prototype fabrication and bring-up.

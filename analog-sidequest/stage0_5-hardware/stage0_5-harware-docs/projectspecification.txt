@@ -1,0 +1,109 @@
+# Project Specification
+
+## Status
+Draft
+
+## Objective
+Build a compact single-branch experimental analog MAC tile for Raspberry Pi Zero 2W that implements one 4x1 Q8.8.8 weighted MAC branch, while preserving the SPI control and partitioning choices needed to replicate the concept into a future 16-branch system.
+
+## Purpose
+This board exists to test theory and achievable accuracy for an analog form of LLM-style inference without immediately buying and integrating hundreds of digital potentiometers. The current design intentionally contains some forward-scaling hooks so the prototype can answer whether the architecture is accurate enough, stable enough, and controllable enough to justify expansion.
+
+## Architecture
+```mermaid
+flowchart TD
+    J1[Pi Zero 2W Header] --> P5V[5V Input]
+    P5V --> U10[AMS1117 3.3V]
+    U10 --> D3V3[D3V3]
+    U10 --> FB1[Ferrite Bead]
+    FB1 --> A3V3[A3V3]
+    J1 --> DGND[DGND]
+    DGND --> R28[0R Star Tie]
+    R28 --> AGND[AGND]
+
+    J1 --> SPI[SPI Bus]
+    SPI --> U7[74HC138 Decoder]
+    U7 --> U1[Digipot U1]
+    U7 --> U2[Digipot U2]
+    U7 --> U3[Digipot U3]
+    U7 --> U4[Digipot U4]
+    U7 --> U5[Digipot U5]
+    U7 --> U6[Digipot U6]
+
+    J1 --> I2C[I2C Bus]
+    I2C --> U8[MCP4728 DAC]
+    I2C --> U9[ADS1115 ADC]
+
+    U8 --> V0[V0]
+    U8 --> V1[V1]
+    U8 --> V2[V2]
+    U8 --> V3[V3]
+
+    U11[OPA2333 U11] --> VCM[Buffered VCM]
+    V0 --> WGT[Digipot Interpolation Bank]
+    V1 --> WGT
+    V2 --> WGT
+    V3 --> WGT
+    VCM --> WGT
+    U1 --> WGT
+    U2 --> WGT
+    U3 --> WGT
+    U4 --> WGT
+    U5 --> WGT
+    U6 --> WGT
+
+    WGT --> SUMMSB[MSB Summer]
+    WGT --> SUMMID[MID Summer]
+    WGT --> SUMLSB[LSB Summer]
+    U11 --> SUMMSB
+    U12[OPA2333 U12] --> SUMMID
+    U13[OPA2333 U13] --> SUMLSB
+
+    SUMMID --> COMB1[First 1 to 256 Combiner]
+    SUMLSB --> COMB1
+    COMB1 --> VLOW[VLOW]
+    SUMMSB --> COMB2[Second 1 to 256 Combiner]
+    VLOW --> COMB2
+    COMB2 --> VOUT[VOUT]
+    VCM --> U9
+    VOUT --> U9
+```
+
+## Functional Requirements
+- Implement one 4-input by 1-output weighted MAC branch.
+- Represent each weight as three 8-bit slices: MSB, MID, and LSB.
+- Use six dual MCP4251 devices to realize 12 programmable slice elements.
+- Use a 74HC138 decoder so chip select structure remains representative of a future larger SPI-controlled array.
+- Use MCP4728 to generate the four analog input voltages.
+- Use ADS1115 to observe VOUT and debug nodes during bring-up.
+- Generate and buffer a midrail VCM on the analog supply for single-supply operation.
+- Combine the three slice sums with two cascaded 1:256 stages so the output implements practical Q8.8.8 weighting.
+
+## Power and Grounding Requirements
+- Source 5V from the Raspberry Pi header.
+- Regulate locally to 3.3V with AMS1117-3.3.
+- Split the regulated output into D3V3 and A3V3 using ferrite bead FB1.
+- Keep digital control and analog compute sections partitioned.
+- Join DGND and AGND at a single star point beside the Pi header using R28.
+- Provide 100nF local decoupling at each IC and bulk capacitors at the 5V input, regulator output, rail branches, DAC/ADC supply, and buffered VCM node.
+
+## Interface Requirements
+- Shared SPI bus from the Pi to all six MCP4251 devices.
+- Decoder-address GPIO lines plus enable gating preserved for future bus scaling.
+- Shared I2C bus from the Pi to MCP4728 and ADS1115 with 4.7k pull-ups.
+- Shared digipot SDO line with 10k pull-up for deterministic idle behavior.
+- Multiple Pi ground pins used for low-impedance return.
+
+## Layout Requirements
+- Approximate board size: 50 mm x 50 mm.
+- Use a 4-layer stackup.
+- Place Pi header and digital control near one side of the board.
+- Place DAC, ADC, op-amps, and summing network in a separate analog zone.
+- Keep high-impedance summing nodes short and isolated from SPI activity.
+- Keep star ground physically near the Pi header.
+- Preserve layout partitioning and buses so the design can inform a later 16-branch replication.
+
+## Validation Goals
+- Measure output accuracy, repeatability, offset, noise sensitivity, and calibration burden.
+- Determine whether the architecture is suitable for later replication into a 16-branch system.
+- Keep test and debug access on critical rails and analog nodes so theory can be checked against measured behavior.
