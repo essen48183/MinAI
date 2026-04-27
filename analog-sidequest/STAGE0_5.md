@@ -84,24 +84,109 @@ spares wasted: chips 1–4 hold the four (MSB, middle) pairs; chips
 
 ## Bill of materials
 
-| Part | Qty | Role | Unit cost | Subtotal |
-|---|---|---|---|---|
-| MCP4251-103E/P (or -E/ML QFN) | 6 | Dual 8-bit volatile SPI digipot, 10 kΩ. Chips 1–4 hold MSB + middle slices of weights w0…w3 (paired on-die for 15 ppm/°C ratiometric tempco). Chips 5–6 hold the four LSB slices (two weights per package). | $1.01 | $6 |
-| **74HC138** (or 74HCT138, SN74HC138) | 1 | **3-to-8 decoder for chip select.** Drives 6 of 8 outputs to the MCP4251 CS pins. Same architectural shape Stage 1 will use at scale (cascaded decoders for 384 CS lines). | $0.30 | $0.30 |
-| AD8629 (dual autozero op-amp) | 3 | Five op-amp stages: MSB summer, middle summer, LSB summer, first combiner (MSB + middle/256), second combiner ((MSB+mid/256) + LSB/256). Three AD8629 packages give 6 channels — five used, one spare for a debug buffer. | $2.00 | $6 |
-| Precision 0.01 % thin-film matched-pair feedback resistors (10 kΩ : 2.56 MΩ, two pairs for the cascaded combiner) | 4 | Set the 1 : 1/256 weighting at each of the two combiner stages. Ratio precision matters far more than absolute value; matched-pair 0.01 % parts make this a non-issue. | $0.30 | $1.20 |
-| 1 % thick-film feedback resistors for the three summers (10 kΩ) | ~10 | Set the gain of the three slice-summing op-amps. 1 % is fine; the absolute scale is absorbed by software calibration. | $0.05 | $0.50 |
-| MCP4728 (quad 12-bit DAC) | 1 | Drives the 4 input voltages over I²C. | $3.00 | $3 |
-| ADS1115 (4-ch 16-bit ADC) | 1 | Reads the final output voltage; spare channels probe V_msb, V_mid, V_lsb individually for debug. | $4.00 | $4 |
-| AMS1117-3.3 LDO regulator | 1 | Local 3.3 V rail from the Pi's 5 V. | $0.30 | $0.30 |
-| 0.1 µF ceramic decoupling caps | ~25 | One per IC power pin, plus a 10 µF bulk near the regulator. | $0.02 | $0.50 |
-| 2×20 pin header (Pi hat) | 1 | Mates to Pi Zero 2W. | $0.80 | $0.80 |
-| 4-layer PCB, ~50 × 50 mm, JLCPCB / PCBWay | 5 | The board itself; fab houses ship 5 minimum. | ~$5 | $25 |
+The "JLC tier" column flags whether the part is on JLCPCB's **Basic
+Parts** list (pre-loaded reels, no per-part setup fee on PCBA orders)
+or **Extended Parts** (~$3 setup per reel). Stage 0.5 deliberately
+keeps the Extended-Parts list short so PCBA assembly tops out around
+$15 in setup on top of the parts cost.
 
-**Tile-side total: ~$50.** With Pi Zero 2W ($15), microSD ($10), and
-USB power supply ($10), **all-in stand-up cost: ~$85.**
+### Active components (ICs)
 
-That is one-tenth of Stage 1's BOM and roughly the cost of dinner.
+| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|
+| **MCP4251-103E/P** (or -E/ML QFN) | 6 | Dual 8-bit volatile SPI digipot, 10 kΩ. Chips 1–4 hold MSB + middle slice pairs of weights w0..w3 (on the same die — 15 ppm/°C ratiometric tempco). Chips 5–6 hold the four LSB slices, two per package. | PDIP-14 / TSSOP-14 | Basic | $1.01 | $6.06 |
+| **AD8629** (dual autozero op-amp) | 3 | Five op-amp stages: MSB summer, middle summer, LSB summer, first combiner, second combiner. One channel of one package is spare (debug buffer). | SOIC-8 | Extended | $2.00 | $6.00 |
+| **74HC138** | 1 | 3-to-8 decoder for chip select. Drives 6 of 8 outputs to MCP4251 CS pins. The 1/64-scale rehearsal of Stage 1's cascaded-decoder CS network. | SOIC-16 | Basic | $0.30 | $0.30 |
+| **MCP4728** (quad 12-bit DAC) | 1 | Drives the four input voltages over I²C. Internal 2.048 V Vref selected at startup. | MSOP-10 | Extended | $3.00 | $3.00 |
+| **ADS1115** (4-ch 16-bit ADC) | 1 | Reads V_out (ch.0); spare channels read V_msb, V_mid, V_lsb for slice-level debug. | MSOP-10 | Basic | $4.00 | $4.00 |
+| **AMS1117-3.3** LDO regulator | 1 | Local 3.3 V analog rail from the Pi's 5 V. Decouple input and output sides. | SOT-223 | Basic | $0.30 | $0.30 |
+
+### Resistors
+
+| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|
+| **10 kΩ thick-film, 1 %** | 8 | Slice-summer feedback resistors (×3) and combiner-stage feedback resistors (×2), plus three spares. Sets the gain of each op-amp stage. 1 % is fine — absolute scale is absorbed by the software calibration step in Experiment 2. | 0603 | Basic | $0.005 | $0.05 |
+| **0.01 % thin-film matched-pair, 10 kΩ : 2.56 MΩ** | 2 pairs (4 resistors) | The binary-weighted 1 : 1/256 ratio at each of the two cascaded combiner stages. **Ratio precision is the spec** — absolute value is irrelevant. Use a real matched-pair part (Vishay PNM-series or equivalent), not two random 0.01 % resistors from different reels. | 0603 / 0805 | Extended (sometimes Digi-Key only) | $1.50 / pair | $3.00 |
+| **4.7 kΩ thick-film, 1 %** | 2 | I²C bus pull-ups on SDA and SCL to 3.3 V. Required for reliable I²C at the speeds the Pi drives. | 0603 | Basic | $0.005 | $0.01 |
+| **10 kΩ thick-film, 1 %** | 1 | MISO bus pull-up to 3.3 V. Six tristate drivers share this line; the pull-up gives it a defined idle state so SPI readback (Experiment 3) never reads floating-line garbage. | 0603 | Basic | $0.005 | $0.01 |
+
+### Capacitors
+
+| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|
+| **0.1 µF X7R, ≥ 16 V** | ~25 | Power-pin decoupling — one per IC power pin (MCP4251 ×6, AD8629 ×3, 74HC138, MCP4728, ADS1115, plus a few spares). Order key on a Fenghua catalog: `0603 X7R 104 K 250` (0603, X7R, 100 nF = 104 in pF×10ⁿ, K = ±10 %, 25 V). | 0603 | Basic | $0.01 | $0.25 |
+| **10 µF X5R or X7R, ≥ 10 V** | 1 | Bulk decoupling near the AMS1117 LDO. Spec it as **MLCC ceramic** (not tantalum, not electrolytic) so there's no polarity to track. Order key: `1206 X5R 106 M 100` (1206, X5R, 10 µF = 106 in pF×10ⁿ, M = ±20 %, 10 V). | 1206 | Basic | $0.05 | $0.05 |
+
+**Avoid Y5V and Z5U dielectrics** even though they appear in the
+same Fenghua catalogs — capacitance drops 50–80 % under temperature
+extremes and DC bias. They're not real capacitors at the precision
+this board needs.
+
+### Connectors and PCB
+
+| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|
+| 2×20 pin header (Pi hat) | 1 | Mates to Pi Zero 2W's 40-pin GPIO header. | THT 2.54 mm | Basic | $0.80 | $0.80 |
+| 4-layer PCB, ~50 × 50 mm | 5 | JLCPCB or PCBWay 4-layer board (fab-house minimum batch is 5). | — | — | $5 | $25.00 |
+
+### Optional but useful
+
+| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|
+| 10 kΩ NTC thermistor (e.g., NTCG063JF103) | 1 | Optional. Lets you characterize tempco on the bench during Experiment 2 by adding a fifth ADC channel reading temperature. Strictly speaking not required to pass the experiments, but useful data and cheap. | 0603 | Basic | $0.50 | $0.50 |
+
+### Totals
+
+- **Active ICs:** ~$19.66
+- **Resistors:** ~$3.07
+- **Caps:** ~$0.30
+- **Connectors / PCB:** ~$25.80
+- **Optional thermistor:** ~$0.50
+- **JLCPCB extended-parts setup fees:** ~$9 (AD8629, MCP4728, matched-pair resistors)
+
+**Tile-side total: ~$58 with the optional thermistor and PCB
+included.** With Pi Zero 2W ($15), microSD ($10), and USB power
+supply ($10), **all-in stand-up cost: ~$93.**
+
+That is one-tenth of Stage 1's BOM and roughly the cost of a nice
+dinner for two.
+
+---
+
+## JLCPCB sourcing notes
+
+If you order this board with JLCPCB's PCBA service (board fab +
+parts placement in one shot), the path is:
+
+1. Upload Gerber files for the PCB.
+2. Upload the BOM and the centroid (CPL) file.
+3. JLCPCB cross-references each line item against their parts
+   library. Lines that match a Basic Part get assembled at the
+   default $0 setup fee. Lines that match an Extended Part get
+   assembled at ~$3 setup per reel.
+4. Lines that don't match anything in their library either get
+   substituted, or you ship them as customer-supplied parts (extra
+   handling fee), or you drop them and hand-solder after the board
+   ships.
+
+For Stage 0.5 the realistic split is:
+
+- **Basic Parts (no setup fee):** MCP4251 digipots, 74HC138 decoder,
+  ADS1115 ADC, AMS1117 regulator, all 1 % thick-film resistors, all
+  X7R / X5R MLCC capacitors, the optional thermistor, the Pi header.
+- **Extended Parts (setup fee, ~$3/reel):** AD8629 op-amp, MCP4728
+  DAC, possibly the matched-pair precision resistors.
+- **Maybe customer-supplied:** the 0.01 % matched-pair 10 kΩ : 2.56 MΩ
+  resistors. JLCPCB sometimes stocks Vishay PNM-series matched pairs
+  in their Extended catalog; if not, source from Digi-Key for ~$1.50
+  per pair and either request "customer parts" placement or hand-
+  solder them after the board ships. The two pairs are by far the
+  most precision-sensitive components on the board, so getting them
+  right matters more than the assembly convenience.
+
+**Total setup fees for a typical Stage 0.5 order: ~$9** (three
+extended-part reels). That brings PCBA-assembled board cost to
+~$67 with shipping, vs ~$58 for hand-populated.
 
 ---
 
@@ -411,7 +496,7 @@ cheap.
 - **Day 8**: Characterize noise; compare to Stage 0 simulator.
 
 **One week from KiCad to a measured first board.** All-in cost
-including PCB fab and Pi: ~$85. Iteration cost on a layout
+including PCB fab and Pi: ~$93. Iteration cost on a layout
 respin: ~$25 + 3 days.
 
 This is the rate at which board-level mistakes should be made.
