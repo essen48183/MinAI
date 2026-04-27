@@ -35,7 +35,7 @@ predicted and in one case (noise at depth) is unexpectedly
 looser.
 
 **Strongly recommended precursor: Stage 0.5** (see `STAGE0_5.md`).
-A 4×1 Q8.8.8 dot-product board, ~$93 all-in, that uses the same
+A 4×1 Q8.8.8 dot-product board, ~$102 all-in, that uses the same
 MCP4251 / AD8629 parts and the same three-slice / cascaded-combiner
 topology Stage 1 will use, in a one-summing-column miniature. Its
 job is to surface KiCad-and-fab mistakes on a $25 PCB rather than

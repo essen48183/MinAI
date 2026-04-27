@@ -92,61 +92,64 @@ $15 in setup on top of the parts cost.
 
 ### Active components (ICs)
 
-| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
-|---|---|---|---|---|---|---|
-| **MCP4251-103E/P** (or -E/ML QFN) | 6 | Dual 8-bit volatile SPI digipot, 10 kΩ. Chips 1–4 hold MSB + middle slice pairs of weights w0..w3 (on the same die — 15 ppm/°C ratiometric tempco). Chips 5–6 hold the four LSB slices, two per package. | PDIP-14 / TSSOP-14 | Basic | $1.01 | $6.06 |
-| **AD8629** (dual autozero op-amp) | 3 | Five op-amp stages: MSB summer, middle summer, LSB summer, first combiner, second combiner. One channel of one package is spare (debug buffer). | SOIC-8 | Extended | $2.00 | $6.00 |
-| **74HC138** | 1 | 3-to-8 decoder for chip select. Drives 6 of 8 outputs to MCP4251 CS pins. The 1/64-scale rehearsal of Stage 1's cascaded-decoder CS network. | SOIC-16 | Basic | $0.30 | $0.30 |
-| **MCP4728** (quad 12-bit DAC) | 1 | Drives the four input voltages over I²C. Internal 2.048 V Vref selected at startup. | MSOP-10 | Extended | $3.00 | $3.00 |
-| **ADS1115** (4-ch 16-bit ADC) | 1 | Reads V_out (ch.0); spare channels read V_msb, V_mid, V_lsb for slice-level debug. | MSOP-10 | Basic | $4.00 | $4.00 |
-| **AMS1117-3.3** LDO regulator | 1 | Local 3.3 V analog rail from the Pi's 5 V. Decouple input and output sides. | SOT-223 | Basic | $0.30 | $0.30 |
+| Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|---|
+| U1–U6 | **MCP4251-103E/SL** | 6 | Dual 8-bit volatile SPI digipot, 10 kΩ. U1–U4 hold MSB + middle slice pairs of weights w0–w3 (on the same die for 15 ppm/°C ratiometric tempco). U5–U6 hold the four LSB slices, two per package. **Used in divider mode** — pin A = V_in, pin B = V_CM (buffered midrail), wiper = scaled output. | SOIC-14 | Basic | $1.01 | $6.06 |
+| U11–U13 | **OPA2333AIDGKTG4** (dual autozero op-amp) | 3 | **Six op-amp channels** = 3 slice summers (MSB / middle / LSB) + 2 cascaded combiners + 1 buffered midrail (V_CM) reference. Substitution for AD8629 — same autozero topology, 10 µV Vos max, 0.05 µV/°C drift, single-supply 1.8–5.5 V. | VSSOP-8 | Extended | $2.00 | $6.00 |
+| U7 | **SN74HC138PWR** | 1 | 3-to-8 decoder for chip select. Drives 6 of 8 outputs to MCP4251 CS pins. The 1/64-scale rehearsal of Stage 1's cascaded-decoder CS network. | TSSOP-16 | Basic | $0.30 | $0.30 |
+| U8 | **MCP4728A0T-E/UN** (quad 12-bit DAC) | 1 | Drives the four input voltages over I²C (default address 0x60). Internal 2.048 V Vref selected at startup; gain 1×. | MSOP-10 | Extended | $3.00 | $3.00 |
+| U9 | **ADS1115IDGSR** (4-ch 16-bit ADC) | 1 | Reads V_OUT (ch.0); spare channels read V_msb, V_mid, V_lsb on test points TP2–TP4 for slice-level debug. I²C address 0x48. | VSSOP-10 | Basic | $4.00 | $4.00 |
+| U10 | **AMS1117-3.3** LDO regulator | 1 | Generates the on-board 3.3 V from the Pi's 5 V; output then splits into separate digital and analog branches via a ferrite bead. | SOT-223 | Basic | $0.30 | $0.30 |
+| FB1 | **BLM18AG601SN1D** ferrite bead | 1 | 600 Ω @ 100 MHz, 1 A. Filters the analog 3.3 V branch from the digital 3.3 V branch. Cleaner than a simple LC filter and small. | 0603 | Basic | $0.10 | $0.10 |
 
 ### Resistors
 
-| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
-|---|---|---|---|---|---|---|
-| **10 kΩ thick-film, 1 %** | 8 | Slice-summer feedback resistors (×3) and combiner-stage feedback resistors (×2), plus three spares. Sets the gain of each op-amp stage. 1 % is fine — absolute scale is absorbed by the software calibration step in Experiment 2. | 0603 | Basic | $0.005 | $0.05 |
-| **0.01 % thin-film matched-pair, 10 kΩ : 2.56 MΩ** | 2 pairs (4 resistors) | The binary-weighted 1 : 1/256 ratio at each of the two cascaded combiner stages. **Ratio precision is the spec** — absolute value is irrelevant. Use a real matched-pair part (Vishay PNM-series or equivalent), not two random 0.01 % resistors from different reels. | 0603 / 0805 | Extended (sometimes Digi-Key only) | $1.50 / pair | $3.00 |
-| **4.7 kΩ thick-film, 1 %** | 2 | I²C bus pull-ups on SDA and SCL to 3.3 V. Required for reliable I²C at the speeds the Pi drives. | 0603 | Basic | $0.005 | $0.01 |
-| **10 kΩ thick-film, 1 %** | 1 | MISO bus pull-up to 3.3 V. Six tristate drivers share this line; the pull-up gives it a defined idle state so SPI readback (Experiment 3) never reads floating-line garbage. | 0603 | Basic | $0.005 | $0.01 |
+| Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|---|
+| R12–R23 | **PAT0603E4002BST1** (Vishay Dale, 40 kΩ, 0.1 %, 25 ppm/°C) | 12 | Slice-summer input resistors — one per (input × slice) cell. With the digipot in divider mode, this resistor sets the per-input current scale into the summing op-amp: `I = V_wiper / 40 kΩ`. Precision matters here because the matmul accuracy is bounded by how well these match across cells. | 0603 thin-film | Extended | $0.30 | $3.60 |
+| R24, R25 | **PAT0603E2564BST1** (Vishay Dale, 2.56 MΩ, 0.1 %, 25 ppm/°C) | 2 | The 1/256 path at each of the two cascaded combiner stages. Pair these with the two PAT0603E1002BST1 (10 kΩ 0.1 %) below to set the binary-weighted ratio. | 0603 thin-film | Extended | $0.50 | $1.00 |
+| **(2 of R1–R11)** | **PAT0603E1002BST1** (Vishay Dale, 10 kΩ, 0.1 %, 25 ppm/°C) | 2 | **Combiner-input 10 kΩ — partners to R24/R25.** Specifically: the 10 kΩ on V_msb's path into the first combiner op-amp, and the 10 kΩ on VLOW's path into the second combiner op-amp. **These set the binary-weighted ratio precision and must be 0.1 %**, not the generic 1 % thick-film. Identify by tracing the inverting-input nets of the two combiner op-amps in the schematic editor. | 0603 thin-film | Extended | $0.30 | $0.60 |
+| **(remaining R1–R11, R26, R27)** | **RC0603FR-07 series** (Yageo, 1 %, thick-film) | 11 | Mixed bias / feedback / pull-up roles where 1 % is sufficient: slice-summer feedback (×3), combiner-stage feedback (×2), midrail-divider 10k:10k (×2), MISO bus pull-up (×1), I²C pull-ups 4.7 kΩ (×2 = R26, R27), spare. | 0603 | Basic | $0.005 | $0.06 |
+| R28 | **RC0603JR-130RL** (Yageo, 13 Ω, 5 %) | 1 | Single AGND-to-DGND star-ground tie. Place ONLY this one across the analog/digital ground split — do not add additional ties anywhere else on the board. | 0603 | Basic | $0.01 | $0.01 |
 
 ### Capacitors
 
-| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
-|---|---|---|---|---|---|---|
-| **0.1 µF X7R, ≥ 16 V** | ~25 | Power-pin decoupling — one per IC power pin (MCP4251 ×6, AD8629 ×3, 74HC138, MCP4728, ADS1115, plus a few spares). Order key on a Fenghua catalog: `0603 X7R 104 K 250` (0603, X7R, 100 nF = 104 in pF×10ⁿ, K = ±10 %, 25 V). | 0603 | Basic | $0.01 | $0.25 |
-| **10 µF X5R or X7R, ≥ 10 V** | 1 | Bulk decoupling near the AMS1117 LDO. Spec it as **MLCC ceramic** (not tantalum, not electrolytic) so there's no polarity to track. Order key: `1206 X5R 106 M 100` (1206, X5R, 10 µF = 106 in pF×10ⁿ, M = ±20 %, 10 V). | 1206 | Basic | $0.05 | $0.05 |
+| Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|---|
+| C1–C14 | **CL10B104KB8NNNC** (Samsung, 0.1 µF X7R 50 V ±10 %) | 14 | Power-pin decoupling — one per IC power pin (MCP4251 ×6, OPA2333 ×3, 74HC138, MCP4728, ADS1115, AMS1117 input, AMS1117 output). Sets the local high-frequency bypass for each chip. | 0603 | Basic | $0.01 | $0.14 |
+| C15–C20 | **C2012X5R1A106M085AB** (TDK, 10 µF X5R 10 V ±20 %) | 6 | Per-rail bulk decoupling: 5 V input, AMS1117 output, A3V3 rail (post-ferrite), D3V3 rail, DAC/ADC supply, V_CM reference output. Six caps so each rail has its own local energy reservoir. **MLCC ceramic** — non-polarized, no orientation to track. | 0805 | Basic | $0.05 | $0.30 |
 
 **Avoid Y5V and Z5U dielectrics** even though they appear in the
-same Fenghua catalogs — capacitance drops 50–80 % under temperature
+same MLCC catalogs — capacitance drops 50–80 % under temperature
 extremes and DC bias. They're not real capacitors at the precision
 this board needs.
 
-### Connectors and PCB
+### Connectors, test points, and PCB
 
-| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
-|---|---|---|---|---|---|---|
-| 2×20 pin header (Pi hat) | 1 | Mates to Pi Zero 2W's 40-pin GPIO header. | THT 2.54 mm | Basic | $0.80 | $0.80 |
-| 4-layer PCB, ~50 × 50 mm | 5 | JLCPCB or PCBWay 4-layer board (fab-house minimum batch is 5). | — | — | $5 | $25.00 |
+| Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|---|
+| J1 | **302-S401** (On Shore, 2×20 0.1″) | 1 | Mates to Pi Zero 2W's 40-pin GPIO header. | THT 2.54 mm | Basic | $0.80 | $0.80 |
+| TP1–TP8 | **1.8 mm test pads** | 8 | Bring-up probe points: TP1 = V_CM (buffered midrail), TP2 = V_OUT, TP3 = V_LOW (intermediate combiner), TP4 = V_LSB, TP5 = A3V3, TP6 = D3V3, TP7 = AGND, TP8 = DGND. **Don't skip these** — they cut Experiment-1/Experiment-2 debug time by an order of magnitude. | — | Basic | $0.05 | $0.40 |
+| — | 4-layer PCB, ~50 × 50 mm | 5 | JLCPCB or PCBWay (fab-house minimum batch is 5). | — | — | $5 | $25.00 |
 
 ### Optional but useful
 
-| Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
-|---|---|---|---|---|---|---|
-| 10 kΩ NTC thermistor (e.g., NTCG063JF103) | 1 | Optional. Lets you characterize tempco on the bench during Experiment 2 by adding a fifth ADC channel reading temperature. Strictly speaking not required to pass the experiments, but useful data and cheap. | 0603 | Basic | $0.50 | $0.50 |
+| Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
+|---|---|---|---|---|---|---|---|
+| — | 10 kΩ NTC thermistor (e.g., NTCG063JF103) | 1 | Optional. Adds a fifth ADC channel for tempco characterization during Experiment 2. Not required to pass any experiment; useful for understanding why the noise floor is what it is. | 0603 | Basic | $0.50 | $0.50 |
 
 ### Totals
 
-- **Active ICs:** ~$19.66
-- **Resistors:** ~$3.07
-- **Caps:** ~$0.30
-- **Connectors / PCB:** ~$25.80
+- **Active ICs (incl. ferrite bead):** ~$19.76
+- **Resistors:** ~$5.27
+- **Caps:** ~$0.44
+- **Connectors / test points / PCB:** ~$26.20
 - **Optional thermistor:** ~$0.50
-- **JLCPCB extended-parts setup fees:** ~$9 (AD8629, MCP4728, matched-pair resistors)
+- **JLCPCB extended-parts setup fees:** ~$15 (OPA2333, MCP4728, PAT0603 thin-film resistor reels)
 
-**Tile-side total: ~$58 with the optional thermistor and PCB
+**Tile-side total: ~$67 with the optional thermistor and PCB
 included.** With Pi Zero 2W ($15), microSD ($10), and USB power
-supply ($10), **all-in stand-up cost: ~$93.**
+supply ($10), **all-in stand-up cost: ~$102.**
 
 That is one-tenth of Stage 1's BOM and roughly the cost of a nice
 dinner for two.
@@ -171,72 +174,115 @@ parts placement in one shot), the path is:
 
 For Stage 0.5 the realistic split is:
 
-- **Basic Parts (no setup fee):** MCP4251 digipots, 74HC138 decoder,
-  ADS1115 ADC, AMS1117 regulator, all 1 % thick-film resistors, all
-  X7R / X5R MLCC capacitors, the optional thermistor, the Pi header.
-- **Extended Parts (setup fee, ~$3/reel):** AD8629 op-amp, MCP4728
-  DAC, possibly the matched-pair precision resistors.
-- **Maybe customer-supplied:** the 0.01 % matched-pair 10 kΩ : 2.56 MΩ
-  resistors. JLCPCB sometimes stocks Vishay PNM-series matched pairs
-  in their Extended catalog; if not, source from Digi-Key for ~$1.50
-  per pair and either request "customer parts" placement or hand-
-  solder them after the board ships. The two pairs are by far the
-  most precision-sensitive components on the board, so getting them
-  right matters more than the assembly convenience.
+- **Basic Parts (no setup fee):** MCP4251-103E/SL digipots,
+  SN74HC138PWR decoder, ADS1115IDGSR ADC, AMS1117-3.3 regulator,
+  BLM18AG601SN1D ferrite bead, the Yageo 1 % thick-film resistors
+  (RC0603FR series), Samsung X7R 0.1 µF caps, TDK X5R 10 µF caps,
+  the optional thermistor, the Pi header (302-S401).
+- **Extended Parts (setup fee, ~$3/reel each):**
+  - **OPA2333AIDGKTG4** op-amp (LCSC C2060187)
+  - **MCP4728A0T-E/UN** DAC
+  - **PAT0603E4002BST1** (40 kΩ 0.1 %), **PAT0603E2564BST1**
+    (2.56 MΩ 0.1 %), and **PAT0603E1002BST1** (10 kΩ 0.1 %) — the
+    Vishay Dale precision thin-film line. JLCPCB stocks the PAT0603
+    family in their Extended catalog; use it if you can.
 
-**Total setup fees for a typical Stage 0.5 order: ~$9** (three
-extended-part reels). That brings PCBA-assembled board cost to
-~$67 with shipping, vs ~$58 for hand-populated.
+The 0.1 % precision thin-film resistors are the ones to verify in
+JLCPCB's parts library *before* you place the order — the board's
+ratio precision depends on them, and substituting in 1 % thick-film
+silently degrades Experiment 2's pass margin from comfortable to
+borderline.
+
+**Total setup fees for a typical Stage 0.5 order: ~$15** (five
+extended-part reels: OPA2333, MCP4728, plus three PAT0603 resistor
+values). That brings PCBA-assembled board cost to ~$82 with
+shipping, vs ~$67 for hand-populated.
 
 ---
 
 ## Schematic (one summing column at Q8.8.8 depth)
 
-Three slice summers feed two cascaded binary-weighted combiners:
+Three slice summers feed two cascaded binary-weighted combiners.
+Single-supply 3.3 V op-amps mean every signal is biased around a
+**buffered midrail reference V_CM ≈ 1.65 V**, generated once by a
+divider + buffer op-amp and distributed to all op-amp + inputs and
+to the digipots' B pins.
 
 ```
-  Slice summers (each is the same inverting-summer circuit, 10 kΩ feedback):
+  Buffered midrail reference (one-shot setup, used everywhere below):
 
-   V[0..3] --[ chips 1-4 ch.A : MSB slices ]-+--> (-) op-amp A  --> V_msb
-                                              |        |
-                                             [Rf_a = 10 kΩ]
+       3.3 V ─[10 kΩ]─┬─[10 kΩ]─ GND
+                      │
+                      ├──> (+) op-amp F ──> V_CM (≈ 1.65 V)
+                                  │
+                                 (-) tied to output (unity follower)
+                                 [routed to TP1, op-amp + inputs, digipots' B pins]
 
-   V[0..3] --[ chips 1-4 ch.B : MID slices ]-+--> (-) op-amp B  --> V_mid
-                                              |        |
-                                             [Rf_b = 10 kΩ]
+  Slice summers (digipots in DIVIDER mode):
 
-   V[0..3] --[ chips 5-6 (8 ch) : LSB slices]-+--> (-) op-amp C  --> V_lsb
-                                              |        |
-                                             [Rf_c = 10 kΩ]
+       V[i]  ──> A pin of MCP4251 (chips 1-4 ch.A : MSB slice for input i)
+       V_CM ──> B pin
+                wiper (W) = V_CM + (V[i] - V_CM) × tap/256
+                  │
+                  └──[40 kΩ R_series]──┐
+                                       │
+                                       ├──> (-) op-amp A ──> V_MSB
+                                       │       (+) tied to V_CM
+                                       │
+                                  [Rf = 10 kΩ feedback to V_OUT pin of op-amp A]
 
-  First combiner (combine MSB and middle at 1 : 1/256):
+       (the same shape, repeated for the four MSB inputs into op-amp A,
+        for the four middle inputs into op-amp B, and for the four LSB
+        inputs into op-amp C — three slice summers total)
 
-       V_msb --[ R = 10 kΩ ]----+
-                                 |---> (-) op-amp D ---> V_a = V_msb + V_mid/256
-       V_mid --[ R = 2.56 MΩ ]--+              |
-                                              [Rf_d = 10 kΩ]
+  First combiner (V_MSB × 1 + V_MID × 1/256 → V_LOW):
 
-  Second combiner (combine that with LSB at 1 : 1/256):
+       V_MSB ─[10 kΩ, 0.1 % ★ ]─┐
+                                 ├──> (-) op-amp D ──> V_LOW
+       V_MID ─[2.56 MΩ, 0.1 %]──┘       (+) tied to V_CM
+                                  [Rf = 10 kΩ feedback]
 
-       V_a   --[ R = 10 kΩ ]----+
-                                 |---> (-) op-amp E ---> V_out
-       V_lsb --[ R = 2.56 MΩ ]--+              |       = V_msb + V_mid/256 + V_lsb/65536
-                                              [Rf_e = 10 kΩ]
+  Second combiner (V_LOW × 1 + V_LSB × 1/256 → V_OUT):
+
+       V_LOW ─[10 kΩ, 0.1 % ★ ]─┐
+                                 ├──> (-) op-amp E ──> V_OUT
+       V_LSB ─[2.56 MΩ, 0.1 %]──┘       (+) tied to V_CM
+                                  [Rf = 10 kΩ feedback]
+
+       V_OUT  =  V_MSB + V_MID/256 + V_LSB/65536  (all referenced to V_CM)
 ```
 
-A single-stage three-input combiner with ratio 1 : 1/256 : 1/65536
-is *not* viable here — the LSB input resistor would need to be
-~655 MΩ (1/65536 of 10 kΩ × 65536 = practical-impossible). Cascading
-two 1 : 1/256 stages gets the same effective LSB weighting using two
-pairs of sane 10 kΩ : 2.56 MΩ thin-film resistors. Standard textbook
-bit-slice DAC topology.
+The two **★** resistors are the ones flagged in the BOM as
+**`PAT0603E1002BST1` (10 kΩ 0.1 % thin-film)**. They sit in the
+binary-weighted-ratio path with the 2.56 MΩ R24/R25 partners; if
+they're left at 1 % thick-film, the 1 : 1/256 ratio is only
+accurate to ~1 % — about 18× larger than the σ ≈ 6 × 10⁻⁴ output
+RMS noise budget — and the LSB / middle slice contributions are
+systematically distorted in a way the Experiment-2 single-scale
+calibration can't absorb.
 
-Use **0.01 % thin-film matched-pair resistors** for each 10 kΩ :
-2.56 MΩ pair. Ratio precision matters far more than absolute value;
-absolute scale is absorbed by software calibration.
+**Why divider mode and not rheostat mode.** Putting the digipot
+between V_in and the summing junction (rheostat mode) means the
+weight is `R_f / (R_series + R_wiper)` — a *non-linear* function of
+the wiper position, and one that goes to infinity if the wiper
+shorts. Driver mode (V_in on pin A, V_CM on pin B, wiper through a
+fixed series resistor) makes the wiper voltage **linear in the tap
+value**: `V_wiper = V_CM + (V_in − V_CM) × tap/256`. Linear is
+what the simulator's Q8.8.8 math assumes; rheostat mode would
+require recalibration of the encoding.
 
-The three slice summers (A, B, C) are three instances of the same
-circuit. Copy the schematic block and rename nets.
+**Why a single-stage three-input combiner doesn't work.** The
+one-shot V_OUT = V_MSB × 1 + V_MID × 1/256 + V_LSB × 1/65536
+combiner would need a 655 MΩ resistor on the LSB input (10 kΩ ×
+65536). 655 MΩ in a 0603 thin-film doesn't exist; even if it did,
+PCB leakage and op-amp input bias current would dominate.
+Cascading two 1 : 1/256 stages gets the same effective weighting
+using two pairs of sane 10 kΩ : 2.56 MΩ thin-film resistors.
+Standard textbook bit-slice DAC topology.
+
+The three slice summers (op-amps A, B, C) are three instances of
+the same inverting-summer-with-V_CM-bias circuit. Copy the
+schematic block and rename nets.
 
 ---
 
@@ -496,7 +542,7 @@ cheap.
 - **Day 8**: Characterize noise; compare to Stage 0 simulator.
 
 **One week from KiCad to a measured first board.** All-in cost
-including PCB fab and Pi: ~$93. Iteration cost on a layout
+including PCB fab and Pi: ~$102. Iteration cost on a layout
 respin: ~$25 + 3 days.
 
 This is the rate at which board-level mistakes should be made.
