@@ -110,7 +110,7 @@ $15 in setup on top of the parts cost.
 | Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
 |---|---|---|---|---|---|---|---|
 | U1–U6 | **MCP4251-103E/SL** | 6 | Dual 8-bit volatile SPI digipot, 10 kΩ. U1–U4 hold MSB + middle slice pairs of weights w0–w3 (on the same die for 15 ppm/°C ratiometric tempco). U5–U6 hold the four LSB slices, two per package. **Used in divider mode** — pin A = V_in, pin B = V_CM (buffered midrail), wiper = scaled output. | SOIC-14 | Basic | $1.01 | $6.06 |
-| U11–U13 | **OPA2333AIDGKTG4** (dual autozero op-amp) | 3 | **Six op-amp channels** = 3 slice summers (MSB / middle / LSB) + 2 cascaded combiners + 1 buffered midrail (V_CM) reference. Substitution for AD8629 — same autozero topology, 10 µV Vos max, 0.05 µV/°C drift, single-supply 1.8–5.5 V. | VSSOP-8 | Extended | $2.00 | $6.00 |
+| U11–U13 | **OPA2333AIDGKR** (dual autozero op-amp, LCSC **C19608**) | 3 | **Six op-amp channels** = 3 slice summers (MSB / middle / LSB) + 2 cascaded combiners + 1 buffered midrail (V_CM) reference. Substitution for AD8629 — same autozero topology, 10 µV Vos max, 0.05 µV/°C drift, single-supply 1.8–5.5 V. The earlier `OPA2333AIDGKTG4` reel suffix (LCSC C2060187) was an older TI lead-finish SKU that LCSC retired; the chip is identical, only the reel marking changed. | VSSOP-8 | Extended | $2.00 | $6.00 |
 | U7 | **SN74HC138PWR** | 1 | 3-to-8 decoder for chip select. Drives 6 of 8 outputs to MCP4251 CS pins. The 1/64-scale rehearsal of Stage 1's cascaded-decoder CS network. | TSSOP-16 | Basic | $0.30 | $0.30 |
 | U8 | **MCP4728A0T-E/UN** (quad 12-bit DAC) | 1 | Drives the four input voltages over I²C (default address 0x60). Internal 2.048 V Vref selected at startup; gain 1×. | MSOP-10 | Extended | $3.00 | $3.00 |
 | U9 | **ADS1115IDGSR** (4-ch 16-bit ADC) | 1 | Reads V_OUT (ch.0); spare channels read V_msb, V_mid, V_lsb on test points TP2–TP4 for slice-level debug. I²C address 0x48. | VSSOP-10 | Basic | $4.00 | $4.00 |
@@ -122,7 +122,7 @@ $15 in setup on top of the parts cost.
 | Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
 |---|---|---|---|---|---|---|---|
 | R12–R23 | **PAT0603E4002BST1** (Vishay Dale, 40 kΩ, 0.1 %, 25 ppm/°C) | 12 | Slice-summer input resistors — one per (input × slice) cell. With the digipot in divider mode, this resistor sets the per-input current scale into the summing op-amp: `I = V_wiper / 40 kΩ`. Precision matters here because the matmul accuracy is bounded by how well these match across cells. | 0603 thin-film | Extended | $0.30 | $3.60 |
-| R24, R25 | **PAT0603E2564BST1** (Vishay Dale, 2.56 MΩ, 0.1 %, 25 ppm/°C) | 2 | The 1/256 path at each of the two cascaded combiner stages. Pair these with the two PAT0603E1002BST1 (10 kΩ 0.1 %) below to set the binary-weighted ratio. | 0603 thin-film | Extended | $0.50 | $1.00 |
+| R24, R25 (each as 2-resistor series pair) | **2.5 MΩ + 60 kΩ in series** at 0.1 % thin-film (E96) | 4 (= 2 pairs) | The 1/256 path at each of the two cascaded combiner stages. The "natural" 2.56 MΩ part (`PAT0603E2564BST1`) is a non-E96 value not stocked at LCSC; implementing as 2.5 MΩ + 60 kΩ in series gives the same effective resistance with combined RSS tolerance ≈ 0.14 %, well inside the binary-ratio precision budget. Two extra solder joints per combiner stage; no layout-area impact. Pair the result with the two PAT0603E1002BST1 (10 kΩ 0.1 %) below to set the binary-weighted ratio. | 0603 thin-film | Extended | $0.30 each | $1.20 |
 | **(2 of R1–R11)** | **PAT0603E1002BST1** (Vishay Dale, 10 kΩ, 0.1 %, 25 ppm/°C) | 2 | **Combiner-input 10 kΩ — partners to R24/R25.** Specifically: the 10 kΩ on V_msb's path into the first combiner op-amp, and the 10 kΩ on VLOW's path into the second combiner op-amp. **These set the binary-weighted ratio precision and must be 0.1 %**, not the generic 1 % thick-film. Identify by tracing the inverting-input nets of the two combiner op-amps in the schematic editor. | 0603 thin-film | Extended | $0.30 | $0.60 |
 | **(remaining R1–R11, R26, R27)** | **RC0603FR-07 series** (Yageo, 1 %, thick-film) | 11 | Mixed bias / feedback / pull-up roles where 1 % is sufficient: slice-summer feedback (×3), combiner-stage feedback (×2), midrail-divider 10k:10k (×2), MISO bus pull-up (×1), I²C pull-ups 4.7 kΩ (×2 = R26, R27), spare. | 0603 | Basic | $0.005 | $0.06 |
 | R28 | **RC0603JR-130RL** (Yageo, 13 Ω, 5 %) | 1 | Single AGND-to-DGND star-ground tie. Place ONLY this one across the analog/digital ground split — do not add additional ties anywhere else on the board. | 0603 | Basic | $0.01 | $0.01 |
@@ -195,12 +195,19 @@ For Stage 0.5 the realistic split is:
   (RC0603FR series), Samsung X7R 0.1 µF caps, TDK X5R 10 µF caps,
   the optional thermistor, the Pi header (302-S401).
 - **Extended Parts (setup fee, ~$3/reel each):**
-  - **OPA2333AIDGKTG4** op-amp (LCSC C2060187)
+  - **OPA2333AIDGKR** op-amp (LCSC **C19608**, VSSOP-8). The
+    older `OPA2333AIDGKTG4` SKU is retired; -DGKR is the current
+    in-stock reel.
   - **MCP4728A0T-E/UN** DAC
-  - **PAT0603E4002BST1** (40 kΩ 0.1 %), **PAT0603E2564BST1**
-    (2.56 MΩ 0.1 %), and **PAT0603E1002BST1** (10 kΩ 0.1 %) — the
-    Vishay Dale precision thin-film line. JLCPCB stocks the PAT0603
-    family in their Extended catalog; use it if you can.
+  - **PAT0603E4002BST1** (40 kΩ 0.1 %) and **PAT0603E1002BST1**
+    (10 kΩ 0.1 %) from the Vishay Dale precision thin-film line.
+  - **2.56 MΩ 0.1 % implementation:** the exact Vishay
+    `PAT0603E2564BST1` is a non-standard E-series value and is
+    not currently stocked at LCSC. Implement instead as a series
+    pair of two stocked E96 0.1 % thin-film values: **2.5 MΩ +
+    60 kΩ in series = 2.56 MΩ**. Combined tolerance ≈ 0.14 % RSS,
+    well within the binary-ratio precision budget. Two extra solder
+    joints per combiner stage; no other layout cost.
 
 The 0.1 % precision thin-film resistors are the ones to verify in
 JLCPCB's parts library *before* you place the order — the board's
