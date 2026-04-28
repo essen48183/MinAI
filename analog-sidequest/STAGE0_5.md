@@ -90,6 +90,21 @@ or **Extended Parts** (~$3 setup per reel). Stage 0.5 deliberately
 keeps the Extended-Parts list short so PCBA assembly tops out around
 $15 in setup on top of the parts cost.
 
+### Package-size convention
+
+- **All capacitors are 0805.** Larger package = smaller DC-bias
+  derating, easier hand-rework, and broader voltage-rating headroom.
+  At the bring-up scale the few extra mm² of board area is a
+  non-issue, and the noise margin gained is meaningful.
+- **All resistors are 0603.** Resistors don't have DC-bias issues,
+  0603 is the universal "default" stocked size, and smaller pads
+  leave more PCB area for routing the 6-chip SPI bus and the
+  decoder's address lines.
+- **All ICs in their stocked SMD packages** (SOIC-14, VSSOP-8/10,
+  TSSOP-16, MSOP-10, SOT-223). No QFNs by deliberate choice — every
+  pin on this board is hand-rework-able with a fine-tip iron, which
+  matters when you're catching the first physical mistakes.
+
 ### Active components (ICs)
 
 | Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
@@ -116,8 +131,8 @@ $15 in setup on top of the parts cost.
 
 | Ref | Part | Qty | Role | Package | JLC tier | Unit | Subtotal |
 |---|---|---|---|---|---|---|---|
-| C1–C14 | **CL10B104KB8NNNC** (Samsung, 0.1 µF X7R 50 V ±10 %) | 14 | Power-pin decoupling — one per IC power pin (MCP4251 ×6, OPA2333 ×3, 74HC138, MCP4728, ADS1115, AMS1117 input, AMS1117 output). Sets the local high-frequency bypass for each chip. | 0603 | Basic | $0.01 | $0.14 |
-| C15–C20 | **C2012X5R1A106M085AB** (TDK, 10 µF X5R 10 V ±20 %) | 6 | Per-rail bulk decoupling: 5 V input, AMS1117 output, A3V3 rail (post-ferrite), D3V3 rail, DAC/ADC supply, V_CM reference output. Six caps so each rail has its own local energy reservoir. **MLCC ceramic** — non-polarized, no orientation to track. | 0805 | Basic | $0.05 | $0.30 |
+| C1–C14 | **CL21B104KBCNNNC** (Samsung, 0.1 µF X7R 50 V ±10 %, **0805**) | 14 | Power-pin decoupling — one per IC power pin (MCP4251 ×6, OPA2333 ×3, 74HC138, MCP4728, ADS1115, AMS1117 input, AMS1117 output). Sets the local high-frequency bypass for each chip. | 0805 | Basic | $0.01 | $0.14 |
+| C15–C20 | **C2012X5R1A106M085AB** (TDK, 10 µF X5R 10 V ±20 %, **0805**) | 6 | Per-rail bulk decoupling: 5 V input, AMS1117 output, A3V3 rail (post-ferrite), D3V3 rail, DAC/ADC supply, V_CM reference output. Six caps so each rail has its own local energy reservoir. **MLCC ceramic** — non-polarized, no orientation to track. | 0805 | Basic | $0.05 | $0.30 |
 
 **Avoid Y5V and Z5U dielectrics** even though they appear in the
 same MLCC catalogs — capacitance drops 50–80 % under temperature
