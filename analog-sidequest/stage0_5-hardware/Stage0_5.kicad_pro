@@ -479,7 +479,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "Effective_Black_R2-D2.kicad_pro",
+    "filename": "Stage0_5.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -867,9 +867,9 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "Effective_Black_R2-D2.kicad_sch",
-        "name": "Effective_Black_R2-D2",
-        "uuid": "33b7eaf2-b7dc-5eaa-9bbc-819d0263809b"
+        "filename": "Stage0_5.kicad_sch",
+        "name": "Stage0_5",
+        "uuid": "1f9c033e-83bc-5c03-89bd-e88e794626cc"
       }
     ],
     "used_designators": "",
@@ -877,8 +877,8 @@
   },
   "sheets": [
     [
-      "33b7eaf2-b7dc-5eaa-9bbc-819d0263809b",
-      "Effective_Black_R2-D2"
+      "1f9c033e-83bc-5c03-89bd-e88e794626cc",
+      "Stage0_5"
     ]
   ],
   "text_variables": {},

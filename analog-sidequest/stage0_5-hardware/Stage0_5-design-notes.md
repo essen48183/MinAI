@@ -1,4 +1,4 @@
-# Effective Black R2-D2
+# Stage0_5
 
 4x1 Q8.8.8 weighted analog MAC tile for Raspberry Pi Zero 2W using six MCP4251 digipots, MCP4728 DAC, ADS1115 ADC, 74HC138 SPI chip-select decode, separate analog/digital 3.3V rails, and a compact 4-layer mixed-signal PCB.
 
